@@ -20,8 +20,8 @@ export function TaxLoadChart({ data }: TaxLoadChartProps) {
   if (!data.length) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-900">Tax load</h2>
-        <p className="mt-1 text-[11px] text-slate-500">Upload operations to see VAT dynamics over time.</p>
+        <h2 className="text-sm font-semibold text-slate-900">Налоговая нагрузка</h2>
+        <p className="mt-1 text-[11px] text-slate-500">Загрузите операции, чтобы увидеть динамику НДС по месяцам.</p>
       </div>
     )
   }
@@ -33,7 +33,7 @@ export function TaxLoadChart({ data }: TaxLoadChartProps) {
     labels,
     datasets: [
       {
-        label: 'Net VAT',
+        label: 'Итоговый НДС',
         data: values,
         borderColor: '#22c55e',
         backgroundColor: 'rgba(34, 197, 94, 0.15)',
@@ -53,7 +53,12 @@ export function TaxLoadChart({ data }: TaxLoadChartProps) {
       tooltip: {
         callbacks: {
           label: (ctx: any) =>
-            ctx.parsed.y.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            ctx.parsed.y.toLocaleString('ru-RU', {
+              style: 'currency',
+              currency: 'RUB',
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            }),
         },
       },
     },
@@ -68,7 +73,7 @@ export function TaxLoadChart({ data }: TaxLoadChartProps) {
           color: '#64748b',
           font: { size: 10 },
           callback: (value: any) =>
-            Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 }),
+            Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 0 }),
         },
       },
     },
@@ -76,8 +81,8 @@ export function TaxLoadChart({ data }: TaxLoadChartProps) {
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <h2 className="text-sm font-semibold text-slate-900">Tax load</h2>
-      <p className="mt-1 text-[11px] text-slate-500">Net VAT by month based on uploaded operations.</p>
+      <h2 className="text-sm font-semibold text-slate-900">Налоговая нагрузка</h2>
+      <p className="mt-1 text-[11px] text-slate-500">Итоговый НДС по месяцам на основе загружённых операций.</p>
       <div className="mt-3 h-40">
         <Line data={chartData} options={options} />
       </div>

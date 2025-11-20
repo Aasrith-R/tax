@@ -22,20 +22,20 @@ export function validateOperation(op: Operation): string[] {
   const errors: string[] = []
 
   if (!op.date || Number.isNaN(Date.parse(op.date))) {
-    errors.push('Invalid or missing date')
+    errors.push('Некорректная или пустая дата')
   }
   if (!Number.isFinite(op.amount)) {
-    errors.push('Amount is not a number')
+    errors.push('Сумма не является числом')
   }
   if (!Number.isFinite(op.vat_rate) || op.vat_rate < 0 || op.vat_rate > 1) {
-    errors.push('VAT rate should be between 0 and 1 (0-100%)')
+    errors.push('Ставка НДС должна быть в диапазоне от 0 до 100%')
   }
   if (!Number.isFinite(op.vat_amount)) {
-    errors.push('VAT amount is not a number')
+    errors.push('Сумма НДС не является числом')
   }
 
   if (!op.counterparty) {
-    errors.push('Counterparty is empty')
+    errors.push('Контрагент не указан')
   }
 
   return errors

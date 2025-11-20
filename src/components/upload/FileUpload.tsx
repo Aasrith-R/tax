@@ -21,13 +21,13 @@ export function FileUpload({ onParsed }: FileUploadProps) {
     if (!file) return
 
     if (!ACCEPTED_TYPES.includes(file.type) && !file.name.match(/\.(csv|xls|xlsx)$/i)) {
-      setError('Unsupported file type. Please upload CSV or Excel.')
+      setError('Неподдерживаемый формат файла. Загрузите CSV или Excel (.csv, .xls, .xlsx).')
       return
     }
 
     const reader = new FileReader()
     reader.onerror = () => {
-      setError('Failed to read file.')
+      setError('Не удалось прочитать файл.')
     }
     reader.onload = () => {
       try {
@@ -38,7 +38,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
 
         const rows: any[] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
         if (!rows.length) {
-          setError('File appears to be empty.')
+          setError('Файл выглядит пустым.')
           return
         }
 
@@ -81,7 +81,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
         onParsed(operations)
       } catch (err) {
         console.error(err)
-        setError('Failed to parse file. Please check the format.')
+        setError('Не удалось разобрать файл. Проверьте формат и структуру колонок.')
       }
     }
 
@@ -94,11 +94,11 @@ export function FileUpload({ onParsed }: FileUploadProps) {
         <span className="text-xl">📄</span>
       </div>
       <div className="space-y-1 text-xs">
-        <p className="font-medium text-slate-800">Drag and drop your Excel or CSV file here</p>
-        <p className="text-slate-500">or click to browse</p>
+        <p className="font-medium text-slate-800">Перетащите файл Excel или CSV сюда</p>
+        <p className="text-slate-500">или нажмите, чтобы выбрать</p>
       </div>
       <label className="inline-flex cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">
-        <span>Select File</span>
+        <span>Выбрать файл</span>
         <input type="file" accept=".csv,.xls,.xlsx" onChange={handleChange} className="hidden" />
       </label>
       {error && <p className="text-xs text-red-500">{error}</p>}
