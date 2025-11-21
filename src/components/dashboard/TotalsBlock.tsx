@@ -1,4 +1,5 @@
 import type { VatTotals } from '../../types/operation'
+import { getVatSummary } from '../../lib/vat'
 
 interface TotalsBlockProps {
   totals: VatTotals
@@ -6,8 +7,8 @@ interface TotalsBlockProps {
 }
 
 export function TotalsBlock({ totals, operationsCount }: TotalsBlockProps) {
-  const netLabel = totals.net_vat >= 0 ? 'К уплате' : 'К возмещению'
-  const netColor = totals.net_vat >= 0 ? 'text-amber-500' : 'text-emerald-600'
+  const vatSummary = getVatSummary(totals)
+  const netColor = vatSummary.type === 'payment' ? 'text-amber-500' : 'text-emerald-600'
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -42,9 +43,9 @@ export function TotalsBlock({ totals, operationsCount }: TotalsBlockProps) {
             </dd>
           </div>
           <div className="flex items-baseline justify-between border-t border-slate-200 pt-3">
-            <dt className="text-slate-500">Итоговый НДС ({netLabel})</dt>
+            <dt className="text-slate-500">{vatSummary.description}</dt>
             <dd className={`${netColor} font-semibold tabular-nums`}>
-              {totals.net_vat.toLocaleString('ru-RU', {
+              {vatSummary.amount.toLocaleString('ru-RU', {
                 style: 'currency',
                 currency: 'RUB',
               })}

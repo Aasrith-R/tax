@@ -9,40 +9,90 @@ export function normalizeVatRate(raw: unknown): number {
 }
 
 export function detectDirection(amount: number): VatDirection {
-  return amount < 0 ? 'input' : 'output'
+  // Positive amounts typically represent sales/revenue (output VAT)
+  // Negative amounts typically represent purchases/expenses (input VAT)
+  if (amount < 0) return 'input'
+  if (amount > 0) return 'output'
+  
+  // For zero amounts, default to output but this should be caught by validation
+  return 'output'
 }
 
 export function computeVatAmount(amount: number, vatRate: number, existing?: unknown): number {
   const fromFile = Number(existing)
-  if (Number.isFinite(fromFile) && fromFile !== 0) return fromFile
-  return amount * vatRate
+  if (Number.isFinite(fromFile) && fromFile !== 0) {
+    return Math.abs(fromFile) // Ensure VAT amount is always positive
+  }
+  
+  // Calculate VAT based on amount and rate
+  const calculatedVat = Math.abs(amount * vatRate)
+  
+  // Handle rounding to 2 decimal places (kopecks)
+  return Math.round(calculatedVat * 100) / 100
 }
 
 export function validateOperation(op: Operation): string[] {
   const errors: string[] = []
 
+  // Date validation
   if (!op.date || Number.isNaN(Date.parse(op.date))) {
     errors.push('Некорректная или пустая дата')
-  }
-  if (!Number.isFinite(op.amount)) {
-    errors.push('Сумма не является числом')
-  }
-  if (!Number.isFinite(op.vat_rate) || op.vat_rate < 0 || op.vat_rate > 1) {
-    errors.push('Ставка НДС должна быть в диапазоне от 0 до 100%')
-  }
-  if (!Number.isFinite(op.vat_amount)) {
-    errors.push('Сумма НДС не является числом')
+  } else {
+    const date = new Date(op.date)
+    const now = new Date()
+    if (date > now) {
+      errors.push('Дата не может быть в будущем')
+    }
+    if (date.getFullYear() < 2000) {
+      errors.push('Дата слишком старая (до 2000 года)')
+    }
   }
 
+  // Amount validation
+  if (!Number.isFinite(op.amount)) {
+    errors.push('Сумма не является числом')
+  } else if (op.amount === 0) {
+    errors.push('Сумма не может быть нулевой')
+  } else if (Math.abs(op.amount) > 1000000000) { // 1 billion
+    errors.push('Сумма выглядит нереалистично большой')
+  }
+
+  // VAT rate validation
+  if (!Number.isFinite(op.vat_rate) || op.vat_rate < 0 || op.vat_rate > 1) {
+    errors.push('Ставка НДС должна быть в диапазоне от 0 до 100%')
+  } else {
+    // Check for common VAT rates
+    const commonRates = [0, 0.1, 0.2] // 0%, 10%, 20%
+    if (!commonRates.includes(op.vat_rate) && op.vat_rate !== 0) {
+      errors.push('Нестандартная ставка НДС (обычно 0%, 10% или 20%)')
+    }
+  }
+
+  // VAT amount validation
+  if (!Number.isFinite(op.vat_amount)) {
+    errors.push('Сумма НДС не является числом')
+  } else if (op.vat_amount < 0) {
+    errors.push('Сумма НДС не может быть отрицательной')
+  }
+
+  // Counterparty validation
   if (!op.counterparty) {
     errors.push('Контрагент не указан')
+  } else if (op.counterparty.length < 2) {
+    errors.push('Наименование контрагента слишком короткое')
+  } else if (op.counterparty.length > 200) {
+    errors.push('Наименование контрагента слишком длинное')
+  } else if (/^\d+$/.test(op.counterparty)) {
+    errors.push('Наименование контрагента не может состоять только из цифр')
   }
 
   return errors
 }
 
 export function calculateTotals(operations: Operation[]): VatTotals {
-  return operations.reduce<VatTotals>(
+  const validOperations = operations.filter(op => !op.errors || op.errors.length === 0)
+  
+  return validOperations.reduce<VatTotals>(
     (acc, op) => {
       if (op.direction === 'input') {
         acc.input_vat += op.vat_amount
@@ -54,6 +104,32 @@ export function calculateTotals(operations: Operation[]): VatTotals {
     },
     { input_vat: 0, output_vat: 0, net_vat: 0 },
   )
+}
+
+export function getVatSummary(totals: VatTotals): {
+  description: string
+  amount: number
+  type: 'payment' | 'refund'
+} {
+  if (totals.net_vat > 0) {
+    return {
+      description: 'НДС к уплате в бюджет',
+      amount: totals.net_vat,
+      type: 'payment'
+    }
+  } else if (totals.net_vat < 0) {
+    return {
+      description: 'НДС к возмещению из бюджета',
+      amount: Math.abs(totals.net_vat),
+      type: 'refund'
+    }
+  } else {
+    return {
+      description: 'НДС не начислен',
+      amount: 0,
+      type: 'payment'
+    }
+  }
 }
 
 export function groupNetVatByMonth(operations: Operation[]): { month: string; net_vat: number }[] {

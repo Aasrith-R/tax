@@ -46,8 +46,12 @@ export function FileUpload({ onParsed }: FileUploadProps) {
         const headerMap = buildHeaderIndex(headerRow as string[])
 
         const operations: Operation[] = dataRows
-          .filter((row) => row.some((cell: unknown) => cell !== null && cell !== undefined && String(cell).trim() !== ''))
           .map((row, index) => {
+            // Skip completely empty rows
+            if (row.every((cell: unknown) => cell == null || String(cell).trim() === '')) {
+              return null
+            }
+            
             const rawDate = getCell(row, headerMap, 'date')
             const rawAmount = Number(getCell(row, headerMap, 'amount'))
             const rawVatRate = getCell(row, headerMap, 'vat_rate')
@@ -76,6 +80,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
 
             return op
           })
+          .filter((op): op is Operation => op !== null)
 
         setError(null)
         onParsed(operations)
@@ -112,11 +117,22 @@ function buildHeaderIndex(headers: string[]) {
     const key = String(h || '')
       .trim()
       .toLowerCase()
-    if (['date', 'дата'].includes(key)) map.date = index
-    if (['amount', 'sum', 'сумма'].includes(key)) map.amount = index
-    if (['vat', 'vat_rate', 'ставка ндс'].includes(key)) map.vat_rate = index
-    if (['vat_amount', 'сумма ндс'].includes(key)) map.vat_amount = index
-    if (['counterparty', 'контрагент'].includes(key)) map.counterparty = index
+      .replace(/[^\wа-яё\s]/g, '') // Remove special characters except Russian letters
+    
+    // Date columns
+    if (['date', 'дата', 'дат', 'дата операции', 'датаоперации'].includes(key)) map.date = index
+    
+    // Amount columns  
+    if (['amount', 'sum', 'сумма', 'сум', 'сумма операции', 'суммаоперации', 'стоимость'].includes(key)) map.amount = index
+    
+    // VAT rate columns
+    if (['vat', 'vat_rate', 'ставка ндс', 'ндс', 'ставка', 'процент ндс', 'процентндс'].includes(key)) map.vat_rate = index
+    
+    // VAT amount columns
+    if (['vat_amount', 'сумма ндс', 'ндс сумма', 'суммандс', 'ндс руб'].includes(key)) map.vat_amount = index
+    
+    // Counterparty columns
+    if (['counterparty', 'контрагент', 'клиент', 'поставщик', 'партнер', 'организация'].includes(key)) map.counterparty = index
   })
   return map
 }
@@ -140,6 +156,19 @@ function normalizeDate(value: unknown): string {
   }
 
   const str = String(value).trim()
+  
+  // Handle Russian date formats: DD.MM.YYYY, DD/MM/YYYY
+  const ruDateMatch = str.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})$/)
+  if (ruDateMatch) {
+    const [, day, month, year] = ruDateMatch
+    const fullYear = year.length === 2 ? 2000 + parseInt(year) : parseInt(year)
+    const date = new Date(fullYear, parseInt(month) - 1, parseInt(day))
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString()
+    }
+  }
+  
+  // Handle ISO and other standard formats
   const parsed = Date.parse(str)
   if (!Number.isNaN(parsed)) {
     return new Date(parsed).toISOString()

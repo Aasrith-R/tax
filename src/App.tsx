@@ -54,18 +54,19 @@ function App() {
               <p className="font-medium text-slate-700">Ожидаемый формат файла:</p>
               <ul className="mt-2 space-y-1 list-disc pl-4">
                 <li>
-                  <span className="font-semibold">date / дата</span> – дата операции (YYYY-MM-DD или DD.MM.YYYY)
+                  <span className="font-semibold">date / дата / дата операции</span> – дата операции (YYYY-MM-DD или DD.MM.YYYY)
                 </li>
                 <li>
-                  <span className="font-semibold">amount / сумма</span> – сумма операции (число, в ₽)
+                  <span className="font-semibold">amount / сумма / стоимость</span> – сумма операции (число, в ₽)
                 </li>
                 <li>
-                  <span className="font-semibold">vat_rate / ставка ндс</span> – ставка НДС в % (например 20, 10, 0)
+                  <span className="font-semibold">vat_rate / ставка ндс / ндс</span> – ставка НДС в % (например 20, 10, 0)
                 </li>
                 <li>
-                  <span className="font-semibold">counterparty / контрагент</span> – наименование клиента или поставщика
+                  <span className="font-semibold">counterparty / контрагент / клиент / поставщик</span> – наименование контрагента
                 </li>
               </ul>
+              <p className="mt-3 text-amber-600">Положительные суммы = исходящий НДС, отрицательные = входящий НДС</p>
             </div>
           </section>
         ) : (
