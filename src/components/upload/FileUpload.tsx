@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { Operation } from '../../types/operation'
-import { computeVatAmount, detectDirection, normalizeVatRate, validateOperation } from '../../lib/vat'
+import { computeVatAmount, normalizeVatRate, validateOperation } from '../../lib/vat'
 
 interface FileUploadProps {
   onParsed: (operations: Operation[]) => void
@@ -42,7 +42,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
           return
         }
 
-        const [headerRow, ...dataRows] = rows
+        const { headerRow, dataRows } = findHeaderAndDataRows(rows)
         const headerMap = buildHeaderIndex(headerRow as string[])
 
         const operations: Operation[] = dataRows
@@ -53,14 +53,48 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             }
             
             const rawDate = getCell(row, headerMap, 'date')
-            const rawAmount = Number(getCell(row, headerMap, 'amount'))
+            const rawDebitAmount = Number(getCell(row, headerMap, 'debit_amount') || getCell(row, headerMap, 'amount'))
+            const rawCreditAmount = Number(getCell(row, headerMap, 'credit_amount'))
             const rawVatRate = getCell(row, headerMap, 'vat_rate')
             const rawVatAmount = getCell(row, headerMap, 'vat_amount')
             const counterparty = String(getCell(row, headerMap, 'counterparty') ?? '').trim()
+            const paymentPurpose = String(getCell(row, headerMap, 'payment_purpose') ?? '').trim()
 
-            const vat_rate = normalizeVatRate(rawVatRate)
-            const vat_amount = computeVatAmount(rawAmount, vat_rate, rawVatAmount)
-            const direction = detectDirection(rawAmount)
+            // For SberBank format: determine amount and direction from debit/credit columns
+            let rawAmount = rawDebitAmount || rawCreditAmount || 0
+            let direction: 'input' | 'output' = 'output' // default to output (debit)
+            
+            if (rawCreditAmount > 0) {
+              rawAmount = rawCreditAmount
+              direction = 'input'
+            } else if (rawDebitAmount > 0) {
+              rawAmount = -rawDebitAmount // Make debit amounts negative
+              direction = 'output'
+            }
+
+            // Extract VAT info from payment purpose if not explicitly provided
+            let vat_rate = normalizeVatRate(rawVatRate)
+            let vat_amount = computeVatAmount(rawAmount, vat_rate, rawVatAmount)
+            
+            if (vat_rate === 0 && paymentPurpose) {
+              const extractedVat = extractVatFromDescription(paymentPurpose)
+              if (extractedVat.rate > 0) {
+                vat_rate = normalizeVatRate(extractedVat.rate)
+                vat_amount = extractedVat.amount
+              }
+            }
+
+            // Debug logging for first few rows
+            if (index < 5) {
+              console.log(`Row ${index}:`, {
+                rawDate,
+                rawAmount,
+                direction,
+                paymentPurpose: paymentPurpose?.substring(0, 100),
+                vat_rate,
+                vat_amount
+              })
+            }
 
             const op: Operation = {
               id: `${file.name}-${index}`,
@@ -68,7 +102,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
               amount: rawAmount,
               vat_rate,
               vat_amount,
-              counterparty,
+              counterparty: counterparty || paymentPurpose, // Use payment purpose as counterparty if not available
               source: file.name,
               direction,
             }
@@ -111,6 +145,35 @@ export function FileUpload({ onParsed }: FileUploadProps) {
   )
 }
 
+function findHeaderAndDataRows(rows: any[]): { headerRow: any[]; dataRows: any[] } {
+  if (!rows.length) {
+    return { headerRow: [], dataRows: [] }
+  }
+
+  const headerIndex = rows.findIndex(row => {
+    if (!Array.isArray(row)) return false
+    return row.some(cell => {
+      if (cell == null) return false
+      const text = String(cell).trim().toLowerCase()
+      return (
+        text.includes('дата проводки') ||
+        text.includes('дата операции') ||
+        text === 'дата' ||
+        text === 'date'
+      )
+    })
+  })
+
+  if (headerIndex === -1) {
+    return { headerRow: rows[0], dataRows: rows.slice(1) }
+  }
+
+  return {
+    headerRow: rows[headerIndex],
+    dataRows: rows.slice(headerIndex + 1),
+  }
+}
+
 function buildHeaderIndex(headers: string[]) {
   const map: Record<string, number> = {}
   headers.forEach((h, index) => {
@@ -119,20 +182,34 @@ function buildHeaderIndex(headers: string[]) {
       .toLowerCase()
       .replace(/[^\wа-яё\s]/g, '') // Remove special characters except Russian letters
     
+    // Direct Japanese character matching (before regex cleaning)
+    const originalHeader = String(h || '').trim()
+    
     // Date columns
-    if (['date', 'дата', 'дат', 'дата операции', 'датаоперации'].includes(key)) map.date = index
+    if (['date', 'дата', 'дат', 'дата операции', 'датаоперации', '日付', 'дата проводки'].includes(key) || originalHeader === '日付') map.date = index
     
     // Amount columns  
-    if (['amount', 'sum', 'сумма', 'сум', 'сумма операции', 'суммаоперации', 'стоимость'].includes(key)) map.amount = index
+    if (['amount', 'sum', 'сумма', 'сум', 'сумма операции', 'суммаоперации', 'стоимость', '金額', 'сумма по дебету'].includes(key) || originalHeader === '金額') {
+      map.amount = index
+      map.debit_amount = index // For SberBank format
+    }
+    
+    // Credit amount columns (SberBank specific)
+    if (['сумма по кредиту'].includes(key)) {
+      map.credit_amount = index
+    }
     
     // VAT rate columns
-    if (['vat', 'vat_rate', 'ставка ндс', 'ндс', 'ставка', 'процент ндс', 'процентндс'].includes(key)) map.vat_rate = index
+    if (['vat', 'vat_rate', 'ставка ндс', 'ндс', 'ставка', 'процент ндс', 'процентндс', '税率'].includes(key) || originalHeader === '税率') map.vat_rate = index
     
     // VAT amount columns
-    if (['vat_amount', 'сумма ндс', 'ндс сумма', 'суммандс', 'ндс руб'].includes(key)) map.vat_amount = index
+    if (['vat_amount', 'сумма ндс', 'ндс сумма', 'суммандс', 'ндс руб', '消費税'].includes(key) || originalHeader === '消費税') map.vat_amount = index
     
     // Counterparty columns
-    if (['counterparty', 'контрагент', 'клиент', 'поставщик', 'партнер', 'организация'].includes(key)) map.counterparty = index
+    if (['counterparty', 'контрагент', 'клиент', 'поставщик', 'партнер', 'организация', '相手先', 'банк (бик и наименование)', 'банк бик и наименование'].includes(key) || originalHeader === '相手先') map.counterparty = index
+    
+    // Payment purpose columns (SberBank specific)
+    if (['назначение платежа'].includes(key)) map.payment_purpose = index
   })
   return map
 }
@@ -141,6 +218,53 @@ function getCell(row: any[], map: Record<string, number>, key: keyof typeof map)
   const idx = map[key]
   if (idx == null) return undefined
   return row[idx]
+}
+
+function extractVatFromDescription(description: string): { rate: number; amount: number } {
+  // Pattern 1: "В т.ч. НДС (20%) 202-83 руб"
+  const vatWithPercent = description.match(/В т\.ч\. НДС\s*\((\d+)%\)\s*([\d\s,-]+)\s*руб/i)
+  if (vatWithPercent) {
+    const rate = parseInt(vatWithPercent[1])
+    const amount = parseFloat(vatWithPercent[2].replace(/\s/g, '').replace(',', '.').replace('-', ''))
+    console.log('Pattern 1 matched:', { rate, amount, description })
+    return { rate, amount }
+  }
+  
+  // Pattern 2: "НДС не облагается" or "Без НДС"
+  if (/НДС не облагается|Без НДС|НДС не взимается/i.test(description)) {
+    console.log('Pattern 2 matched (no VAT):', description)
+    return { rate: 0, amount: 0 }
+  }
+  
+  // Pattern 3: "В том числе НДС 20 % - 21035.60 рублей"
+  const vatInWords = description.match(/НДС\s*(\d+)\s*%\s*[-—]\s*([\d\s,.]+)\s*(?:руб|рублей|р)/i)
+  if (vatInWords) {
+    const rate = parseInt(vatInWords[1])
+    const amount = parseFloat(vatInWords[2].replace(/\s/g, '').replace(',', '.'))
+    console.log('Pattern 3 matched:', { rate, amount, description })
+    return { rate, amount }
+  }
+  
+  // Pattern 4: "В т.ч. НДС 20% - 19 508,33 РУБ"
+  const vatShort = description.match(/НДС\s*(\d+)%\s*[-—]\s*([\d\s,]+)\s*РУБ/i)
+  if (vatShort) {
+    const rate = parseInt(vatShort[1])
+    const amount = parseFloat(vatShort[2].replace(/\s/g, '').replace(',', '.'))
+    console.log('Pattern 4 matched:', { rate, amount, description })
+    return { rate, amount }
+  }
+  
+  // Pattern 5: "В т.ч. НДС 20% - 19 508,33 руб"
+  const vatShortRub = description.match(/В т\.ч\.\s*НДС\s*(\d+)%\s*[-—]\s*([\d\s,]+)\s*руб/i)
+  if (vatShortRub) {
+    const rate = parseInt(vatShortRub[1])
+    const amount = parseFloat(vatShortRub[2].replace(/\s/g, '').replace(',', '.'))
+    console.log('Pattern 5 matched:', { rate, amount, description })
+    return { rate, amount }
+  }
+  
+  console.log('No VAT pattern matched for:', description.substring(0, 100))
+  return { rate: 0, amount: 0 }
 }
 
 function normalizeDate(value: unknown): string {
@@ -163,6 +287,16 @@ function normalizeDate(value: unknown): string {
     const [, day, month, year] = ruDateMatch
     const fullYear = year.length === 2 ? 2000 + parseInt(year) : parseInt(year)
     const date = new Date(fullYear, parseInt(month) - 1, parseInt(day))
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString()
+    }
+  }
+  
+  // Handle Japanese date formats: YYYY/MM/DD, YYYY/MM/DD (年/月/日)
+  const jpDateMatch = str.match(/^(\d{4})[\/年](\d{1,2})[\/月](\d{1,2})[日]?$/)
+  if (jpDateMatch) {
+    const [, year, month, day] = jpDateMatch
+    const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
     if (!Number.isNaN(date.getTime())) {
       return date.toISOString()
     }

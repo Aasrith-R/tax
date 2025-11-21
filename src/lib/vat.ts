@@ -64,7 +64,8 @@ export function validateOperation(op: Operation): string[] {
     // Check for common VAT rates
     const commonRates = [0, 0.1, 0.2] // 0%, 10%, 20%
     if (!commonRates.includes(op.vat_rate) && op.vat_rate !== 0) {
-      errors.push('Нестандартная ставка НДС (обычно 0%, 10% или 20%)')
+      // Don't treat uncommon VAT rates as errors for bank statements
+      // errors.push('Нестандартная ставка НДС (обычно 0%, 10% или 20%)')
     }
   }
 
@@ -91,6 +92,16 @@ export function validateOperation(op: Operation): string[] {
 
 export function calculateTotals(operations: Operation[]): VatTotals {
   const validOperations = operations.filter(op => !op.errors || op.errors.length === 0)
+  const invalidOperations = operations.filter(op => op.errors && op.errors.length > 0)
+  
+  // Debug logging
+  console.log('Total operations:', operations.length)
+  console.log('Valid operations:', validOperations.length)
+  console.log('Invalid operations:', invalidOperations.length)
+  
+  if (invalidOperations.length > 0) {
+    console.log('Sample errors:', invalidOperations.slice(0, 3).map(op => ({ id: op.id, errors: op.errors })))
+  }
   
   return validOperations.reduce<VatTotals>(
     (acc, op) => {

@@ -17,8 +17,8 @@ export function OperationsTable({ operations }: OperationsTableProps) {
   }
 
   return (
-    <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
-      <table className="min-w-full divide-y divide-slate-200 text-[11px]">
+    <div className="mt-4 w-full max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <table className="min-w-[720px] divide-y divide-slate-200 text-[10px] sm:text-[11px]">
         <thead className="bg-slate-50">
           <tr>
             <th className="px-3 py-2 text-left font-medium uppercase tracking-wide text-slate-400">Дата</th>
