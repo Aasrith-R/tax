@@ -9,6 +9,7 @@ const ZERO_VAT_PHRASES = [
   'ндс не взимается',
   'ндс нет',
   'без налога (ндс)',
+  'ндс не облагается',
 ]
 
 function hasZeroVat(text: string): boolean {
@@ -37,12 +38,12 @@ function normalizeRussianNumber(raw: string): number | null {
  *
  * Returns 0 if:
  *  - text contains "Без НДС" / "НДС не облагается" / etc.
- *  - we don’t find any plausible VAT number near "НДС".
+ *  - we don't find any plausible VAT number near "НДС".
  */
 export function extractVatFromDescription(description: unknown): number {
   if (typeof description !== 'string') return 0
   if (!description) return 0
-
+  
   if (hasZeroVat(description)) {
     return 0
   }
@@ -54,24 +55,24 @@ export function extractVatFromDescription(description: unknown): number {
   }
 
   // Look only in a short window after "НДС" to avoid catching dates like 2017-06-05
-  const window = 80
+  const window = 120
   const tail = text.slice(m + 3, m + 3 + window)
-
+  
   const re = /(\d[\d\s]*[.,-]\d{2})/g
   let match: RegExpExecArray | null
   const candidates: string[] = []
-
+  
   while ((match = re.exec(tail)) !== null) {
     const token = match[1]
     const noSpaces = token.replace(/\s+/g, '')
-
+    
     // Filter out things that look like dates: "2017-06" followed by '-' (for "-05")
     const afterIndex = match.index + token.length
     const afterChar = tail[afterIndex]
     if (/^\d{4}-\d{2}$/.test(noSpaces) && afterChar === '-') {
       continue
     }
-
+    
     candidates.push(token)
   }
 
@@ -87,18 +88,18 @@ export function extractVatFromDescription(description: unknown): number {
 
 export function normalizeVatRate(raw: unknown): number {
   if (raw == null) return 0
-
+  
   if (typeof raw === 'string') {
     const trimmed = raw.trim()
     if (!trimmed) return 0
-
+    
     const withoutPercent = trimmed.replace('%', '').replace(',', '.')
     const n = Number(withoutPercent)
     if (!Number.isFinite(n) || n < 0) return 0
-
+    
     return n > 1 ? n / 100 : n
   }
-
+  
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return 0
   if (n > 1) return n / 100
@@ -108,32 +109,42 @@ export function normalizeVatRate(raw: unknown): number {
 // --- Direction detection -----------------------------------------------------
 
 /**
- * Prefer using Sber operation code (ВО):
- *  - '01' / '17' -> input (you pay, expenses/commissions)
- *  - '02'        -> output (you receive)
- *
- * Fallback: use sign of amount if operationCode is not provided.
+ * CRITICAL FIX: Proper direction detection for VAT purposes
+ * 
+ * For VAT reporting:
+ * - INPUT VAT (deductible): VAT you PAID on purchases/expenses (debit operations, code '01')
+ * - OUTPUT VAT (payable): VAT you COLLECTED from customers (credit operations, code '02')
+ * 
+ * SberBank operation codes:
+ *  - '01' -> Debit (outgoing payment - you paid VAT) = INPUT VAT
+ *  - '02' -> Credit (incoming payment - you collected VAT) = OUTPUT VAT
+ *  - '17' -> Internal bank fees/commissions = INPUT VAT (but usually no VAT)
  */
 export function detectDirection(amount: number, operationCode?: string | null): VatDirection {
-  if (operationCode === '01' || operationCode === '17') return 'input'
-  if (operationCode === '02') return 'output'
-
-  // Legacy behaviour (for generic CSV): positive = output, negative = input
-  if (amount < 0) return 'input'
-  if (amount > 0) return 'output'
-
-  // Zero should normally be filtered out earlier
-  return 'output'
+  // Use operation code if available (most reliable for Sber statements)
+  if (operationCode === '01' || operationCode === '17') {
+    return 'input'  // You paid expenses -> Input VAT (deductible)
+  }
+  if (operationCode === '02') {
+    return 'output' // You received income -> Output VAT (payable)
+  }
+  
+  // Fallback to amount sign (for non-Sber files)
+  // NEGATIVE amount = expense = INPUT VAT (you paid)
+  // POSITIVE amount = income = OUTPUT VAT (you collected)
+  return amount < 0 ? 'input' : 'output'
 }
 
 // --- VAT amount calculation --------------------------------------------------
 
 /**
+ * CRITICAL FIX: Compute VAT amount with proper absolute value handling
+ * 
  * Compute VAT amount with three tiers of logic:
  * 1) If existing is a number (already extracted) -> use its absolute value.
  * 2) If existing is a string (e.g. full payment description) ->
  *    try to extract VAT from text (Russian formats, "В т.ч. НДС ...").
- * 3) Otherwise fall back to amount * vatRate (for generic uploads with explicit rate).
+ * 3) Otherwise fall back to |amount| * vatRate (for generic uploads with explicit rate).
  */
 export function computeVatAmount(
   amount: number,
@@ -156,7 +167,7 @@ export function computeVatAmount(
         return fromDesc
       }
     }
-
+    
     // Otherwise try to parse the string as a Russian-style number directly
     const candidate = normalizeRussianNumber(existing)
     if (candidate !== null && candidate !== 0) {
@@ -164,11 +175,12 @@ export function computeVatAmount(
     }
   }
 
-  // 3) Fallback: calculate VAT as amount * rate (for non-Sber CSVs with explicit rates)
+  // 3) Fallback: calculate VAT as |amount| * rate (for non-Sber CSVs with explicit rates)
   const rate = normalizeVatRate(vatRate)
   if (rate <= 0) return 0
-
-  const calculatedVat = Math.abs(amount * rate)
+  
+  // CRITICAL: Use absolute value of amount
+  const calculatedVat = Math.abs(amount) * rate
   return Math.round(calculatedVat * 100) / 100
 }
 
@@ -200,7 +212,7 @@ export function validateOperation(op: Operation): string[] {
     errors.push('Сумма выглядит нереалистично большой')
   }
 
-  // VAT rate validation (soft — Sber statements usually don’t have a real rate column)
+  // VAT rate validation (soft — Sber statements usually don't have a real rate column)
   const normalizedRate = normalizeVatRate(op.vat_rate as unknown)
   if (normalizedRate < 0 || normalizedRate > 1) {
     errors.push('Ставка НДС должна быть в диапазоне от 0 до 100%')
@@ -236,21 +248,48 @@ export function validateOperation(op: Operation): string[] {
 
 // --- Totals & summary --------------------------------------------------------
 
+/**
+ * CRITICAL FIX: Corrected VAT totals calculation
+ * 
+ * For Russian VAT reporting:
+ * - Input VAT (Входящий НДС): VAT you PAID on purchases = DEDUCTIBLE
+ * - Output VAT (Исходящий НДС): VAT you COLLECTED from sales = PAYABLE
+ * - Net VAT = Output VAT - Input VAT
+ *   - If positive: you owe the budget
+ *   - If negative: budget owes you (refund)
+ */
 export function calculateTotals(operations: Operation[]): VatTotals {
   const validOperations = operations.filter(op => !op.errors || op.errors.length === 0)
-
+  
   const totals = validOperations.reduce<VatTotals>(
     (acc, op) => {
-      if (op.direction === 'input') {
-        acc.input_vat += op.vat_amount
-      } else {
-        acc.output_vat += op.vat_amount
+      // Skip operations with zero VAT
+      if (!op.vat_amount || op.vat_amount === 0) {
+        return acc
       }
-      acc.net_vat = acc.output_vat - acc.input_vat
+      
+      if (op.direction === 'input') {
+        // Input VAT: VAT you paid (deductible)
+        acc.input_vat += Math.abs(op.vat_amount)
+      } else {
+        // Output VAT: VAT you collected (payable)
+        acc.output_vat += Math.abs(op.vat_amount)
+      }
+      
       return acc
     },
     { input_vat: 0, output_vat: 0, net_vat: 0 },
   )
+  
+  // Net VAT = Output (collected) - Input (paid)
+  // Positive = you owe budget
+  // Negative = budget owes you
+  totals.net_vat = totals.output_vat - totals.input_vat
+  
+  // Round to 2 decimal places
+  totals.input_vat = Math.round(totals.input_vat * 100) / 100
+  totals.output_vat = Math.round(totals.output_vat * 100) / 100
+  totals.net_vat = Math.round(totals.net_vat * 100) / 100
 
   return totals
 }
@@ -282,18 +321,30 @@ export function getVatSummary(totals: VatTotals): {
 }
 
 export function groupNetVatByMonth(operations: Operation[]): { month: string; net_vat: number }[] {
-  const map = new Map<string, number>()
-
+  const map = new Map<string, { input: number; output: number }>()
+  
   for (const op of operations) {
     if (!op.date || Number.isNaN(Date.parse(op.date))) continue
+    if (!op.vat_amount || op.vat_amount === 0) continue
+    
     const d = new Date(op.date)
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    const sign = op.direction === 'input' ? -1 : 1
-    const current = map.get(key) ?? 0
-    map.set(key, current + sign * op.vat_amount)
+    
+    const current = map.get(key) ?? { input: 0, output: 0 }
+    
+    if (op.direction === 'input') {
+      current.input += Math.abs(op.vat_amount)
+    } else {
+      current.output += Math.abs(op.vat_amount)
+    }
+    
+    map.set(key, current)
   }
-
+  
   return Array.from(map.entries())
     .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([month, net_vat]) => ({ month, net_vat }))
+    .map(([month, { input, output }]) => ({ 
+      month, 
+      net_vat: Math.round((output - input) * 100) / 100 
+    }))
 }
