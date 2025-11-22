@@ -1,40 +1,178 @@
 import type { Operation, VatTotals, VatDirection } from '../types/operation'
 
+// --- Helpers for Sber-style VAT parsing ------------------------------------
+
+const ZERO_VAT_PHRASES = [
+  'без ндс',
+  'ндс не облагается',
+  'ндс не предусмотрен',
+  'ндс не взимается',
+  'ндс нет',
+  'без налога (ндс)',
+]
+
+function hasZeroVat(text: string): boolean {
+  const t = text.toLowerCase()
+  return ZERO_VAT_PHRASES.some(p => t.includes(p))
+}
+
+/**
+ * Normalize Russian-style numbers:
+ *  - "202-83"   -> 202.83
+ *  - "68 925,92"-> 68925.92
+ *  - "35516.67" -> 35516.67
+ */
+function normalizeRussianNumber(raw: string): number | null {
+  const cleaned = raw.replace(/\s+/g, '').replace(/[-,]/g, '.')
+  const n = Number(cleaned)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Extract VAT amount from a payment description.
+ * Works for phrases like:
+ *  - "В т.ч. НДС (20%) 202-83 руб."
+ *  - "В том числе НДС 20 % - 21035.60 рублей."
+ *  - "НДС 20% включенный в сумму - 68925,92"
+ *
+ * Returns 0 if:
+ *  - text contains "Без НДС" / "НДС не облагается" / etc.
+ *  - we don’t find any plausible VAT number near "НДС".
+ */
+export function extractVatFromDescription(description: unknown): number {
+  if (typeof description !== 'string') return 0
+  if (!description) return 0
+
+  if (hasZeroVat(description)) {
+    return 0
+  }
+
+  const text = description
+  const m = text.toLowerCase().indexOf('ндс')
+  if (m === -1) {
+    return 0
+  }
+
+  // Look only in a short window after "НДС" to avoid catching dates like 2017-06-05
+  const window = 80
+  const tail = text.slice(m + 3, m + 3 + window)
+
+  const re = /(\d[\d\s]*[.,-]\d{2})/g
+  let match: RegExpExecArray | null
+  const candidates: string[] = []
+
+  while ((match = re.exec(tail)) !== null) {
+    const token = match[1]
+    const noSpaces = token.replace(/\s+/g, '')
+
+    // Filter out things that look like dates: "2017-06" followed by '-' (for "-05")
+    const afterIndex = match.index + token.length
+    const afterChar = tail[afterIndex]
+    if (/^\d{4}-\d{2}$/.test(noSpaces) && afterChar === '-') {
+      continue
+    }
+
+    candidates.push(token)
+  }
+
+  if (candidates.length === 0) return 0
+
+  // In practice VAT amount is the last number after НДС in the window
+  const rawNum = candidates[candidates.length - 1]
+  const value = normalizeRussianNumber(rawNum)
+  return value ?? 0
+}
+
+// --- VAT rate normalization --------------------------------------------------
+
 export function normalizeVatRate(raw: unknown): number {
+  if (raw == null) return 0
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (!trimmed) return 0
+
+    const withoutPercent = trimmed.replace('%', '').replace(',', '.')
+    const n = Number(withoutPercent)
+    if (!Number.isFinite(n) || n < 0) return 0
+
+    return n > 1 ? n / 100 : n
+  }
+
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return 0
-  // If user provided 10 or 20, treat it as percentage
   if (n > 1) return n / 100
   return n
 }
 
-export function detectDirection(amount: number): VatDirection {
-  // Positive amounts typically represent sales/revenue (output VAT)
-  // Negative amounts typically represent purchases/expenses (input VAT)
+// --- Direction detection -----------------------------------------------------
+
+/**
+ * Prefer using Sber operation code (ВО):
+ *  - '01' / '17' -> input (you pay, expenses/commissions)
+ *  - '02'        -> output (you receive)
+ *
+ * Fallback: use sign of amount if operationCode is not provided.
+ */
+export function detectDirection(amount: number, operationCode?: string | null): VatDirection {
+  if (operationCode === '01' || operationCode === '17') return 'input'
+  if (operationCode === '02') return 'output'
+
+  // Legacy behaviour (for generic CSV): positive = output, negative = input
   if (amount < 0) return 'input'
   if (amount > 0) return 'output'
-  
-  // For zero amounts, default to output but this should be caught by validation
+
+  // Zero should normally be filtered out earlier
   return 'output'
 }
 
-export function computeVatAmount(amount: number, vatRate: number, existing?: unknown): number {
-  const fromFile = Number(existing)
-  if (Number.isFinite(fromFile) && fromFile !== 0) {
-    return Math.abs(fromFile) // Ensure VAT amount is always positive
+// --- VAT amount calculation --------------------------------------------------
+
+/**
+ * Compute VAT amount with three tiers of logic:
+ * 1) If existing is a number (already extracted) -> use its absolute value.
+ * 2) If existing is a string (e.g. full payment description) ->
+ *    try to extract VAT from text (Russian formats, "В т.ч. НДС ...").
+ * 3) Otherwise fall back to amount * vatRate (for generic uploads with explicit rate).
+ */
+export function computeVatAmount(
+  amount: number,
+  vatRate: number,
+  existing?: unknown,
+): number {
+  // 1) If caller already passed a numeric VAT (e.g. separate column)
+  if (typeof existing === 'number') {
+    if (Number.isFinite(existing) && existing !== 0) {
+      return Math.abs(existing)
+    }
   }
 
-  // Calculate VAT based on GROSS amount (bank statements usually contain gross sums)
-  if (!Number.isFinite(amount) || vatRate <= 0) {
-    return 0
+  // 2) If caller passed a string (e.g. Назначение платежа or "VAT" column with Russian format)
+  if (typeof existing === 'string' && existing.trim()) {
+    // Try to parse full description if it contains НДС
+    if (existing.toLowerCase().includes('ндс')) {
+      const fromDesc = extractVatFromDescription(existing)
+      if (fromDesc > 0) {
+        return fromDesc
+      }
+    }
+
+    // Otherwise try to parse the string as a Russian-style number directly
+    const candidate = normalizeRussianNumber(existing)
+    if (candidate !== null && candidate !== 0) {
+      return Math.abs(candidate)
+    }
   }
 
-  // VAT = Gross * (rate / (1 + rate))
-  const calculatedVat = Math.abs(amount * (vatRate / (1 + vatRate)))
+  // 3) Fallback: calculate VAT as amount * rate (for non-Sber CSVs with explicit rates)
+  const rate = normalizeVatRate(vatRate)
+  if (rate <= 0) return 0
 
-  // Handle rounding to 2 decimal places (kopecks)
+  const calculatedVat = Math.abs(amount * rate)
   return Math.round(calculatedVat * 100) / 100
 }
+
+// --- Validation --------------------------------------------------------------
 
 export function validateOperation(op: Operation): string[] {
   const errors: string[] = []
@@ -58,25 +196,26 @@ export function validateOperation(op: Operation): string[] {
     errors.push('Сумма не является числом')
   } else if (op.amount === 0) {
     errors.push('Сумма не может быть нулевой')
-  } else if (Math.abs(op.amount) > 1000000000) { // 1 billion
+  } else if (Math.abs(op.amount) > 1_000_000_000) {
     errors.push('Сумма выглядит нереалистично большой')
   }
 
-  // VAT rate validation
-  if (!Number.isFinite(op.vat_rate) || op.vat_rate < 0 || op.vat_rate > 1) {
+  // VAT rate validation (soft — Sber statements usually don’t have a real rate column)
+  const normalizedRate = normalizeVatRate(op.vat_rate as unknown)
+  if (normalizedRate < 0 || normalizedRate > 1) {
     errors.push('Ставка НДС должна быть в диапазоне от 0 до 100%')
   } else {
-    // Check for common VAT rates
-    const commonRates = [0, 0.1, 0.2] // 0%, 10%, 20%
-    if (!commonRates.includes(op.vat_rate) && op.vat_rate !== 0) {
-      // Don't treat uncommon VAT rates as errors for bank statements
-      // errors.push('Нестандартная ставка НДС (обычно 0%, 10% или 20%)')
-    }
+    op.vat_rate = normalizedRate
   }
 
   // VAT amount validation
   if (!Number.isFinite(op.vat_amount)) {
-    errors.push('Сумма НДС не является числом')
+    // Only complain if there *should* be VAT (non-zero rate)
+    if (op.vat_rate && op.vat_rate > 0) {
+      errors.push('Сумма НДС не является числом')
+    } else {
+      op.vat_amount = 0
+    }
   } else if (op.vat_amount < 0) {
     errors.push('Сумма НДС не может быть отрицательной')
   }
@@ -95,20 +234,12 @@ export function validateOperation(op: Operation): string[] {
   return errors
 }
 
+// --- Totals & summary --------------------------------------------------------
+
 export function calculateTotals(operations: Operation[]): VatTotals {
   const validOperations = operations.filter(op => !op.errors || op.errors.length === 0)
-  const invalidOperations = operations.filter(op => op.errors && op.errors.length > 0)
-  
-  // Debug logging
-  console.log('Total operations:', operations.length)
-  console.log('Valid operations:', validOperations.length)
-  console.log('Invalid operations:', invalidOperations.length)
-  
-  if (invalidOperations.length > 0) {
-    console.log('Sample errors:', invalidOperations.slice(0, 3).map(op => ({ id: op.id, errors: op.errors })))
-  }
-  
-  return validOperations.reduce<VatTotals>(
+
+  const totals = validOperations.reduce<VatTotals>(
     (acc, op) => {
       if (op.direction === 'input') {
         acc.input_vat += op.vat_amount
@@ -120,6 +251,8 @@ export function calculateTotals(operations: Operation[]): VatTotals {
     },
     { input_vat: 0, output_vat: 0, net_vat: 0 },
   )
+
+  return totals
 }
 
 export function getVatSummary(totals: VatTotals): {
@@ -131,19 +264,19 @@ export function getVatSummary(totals: VatTotals): {
     return {
       description: 'НДС к уплате в бюджет',
       amount: totals.net_vat,
-      type: 'payment'
+      type: 'payment',
     }
   } else if (totals.net_vat < 0) {
     return {
       description: 'НДС к возмещению из бюджета',
       amount: Math.abs(totals.net_vat),
-      type: 'refund'
+      type: 'refund',
     }
   } else {
     return {
       description: 'НДС не начислен',
       amount: 0,
-      type: 'payment'
+      type: 'payment',
     }
   }
 }
