@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { Operation } from '../../types/operation'
-import { computeVatAmount, normalizeVatRate, validateOperation } from '../../lib/vat'
+import { computeVatAmount, normalizeVatRate, validateOperation, detectDirection } from '../../lib/vat'
 
 interface FileUploadProps {
   onParsed: (operations: Operation[]) => void
@@ -53,6 +53,8 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             }
             
             const rawDate = getCell(row, headerMap, 'date')
+            // Note: rawDebitAmount/rawCreditAmount are now mapped based on the reversed logic in buildHeaderIndex.
+            // rawDebitAmount is used for money OUT (purchases), rawCreditAmount for money IN (sales).
             const rawDebitAmount = Number(getCell(row, headerMap, 'debit_amount') || getCell(row, headerMap, 'amount'))
             const rawCreditAmount = Number(getCell(row, headerMap, 'credit_amount'))
             const rawVatRate = getCell(row, headerMap, 'vat_rate')
@@ -61,16 +63,17 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             const paymentPurpose = String(getCell(row, headerMap, 'payment_purpose') ?? '').trim()
 
             // For SberBank format: determine amount and direction from debit/credit columns
-            let rawAmount = rawDebitAmount || rawCreditAmount || 0
-            let direction: 'input' | 'output' = 'output' // default to output (debit)
+            // Credit (Money IN / Sales) should be positive
+            // Debit (Money OUT / Purchases) should be negative
+            let rawAmount = 0
             
             if (rawCreditAmount > 0) {
-              rawAmount = rawCreditAmount
-              direction = 'input'
+              rawAmount = rawCreditAmount // POSITIVE amount -> Output VAT (Sales)
             } else if (rawDebitAmount > 0) {
-              rawAmount = -rawDebitAmount // Make debit amounts negative
-              direction = 'output'
+              rawAmount = -rawDebitAmount // NEGATIVE amount -> Input VAT (Purchases)
             }
+
+            const direction = detectDirection(rawAmount)
 
             // Extract VAT info from payment purpose if not explicitly provided
             let vat_rate = normalizeVatRate(rawVatRate)
@@ -88,6 +91,8 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             if (index < 5) {
               console.log(`Row ${index}:`, {
                 rawDate,
+                rawCreditAmount, // Check what data is in the Credit column
+                rawDebitAmount,  // Check what data is in the Debit column
                 rawAmount,
                 direction,
                 paymentPurpose: paymentPurpose?.substring(0, 100),
@@ -165,6 +170,7 @@ function findHeaderAndDataRows(rows: any[]): { headerRow: any[]; dataRows: any[]
   })
 
   if (headerIndex === -1) {
+    // Fallback: assume first row is header
     return { headerRow: rows[0], dataRows: rows.slice(1) }
   }
 
@@ -188,15 +194,22 @@ function buildHeaderIndex(headers: string[]) {
     // Date columns
     if (['date', 'дата', 'дат', 'дата операции', 'датаоперации', '日付', 'дата проводки'].includes(key) || originalHeader === '日付') map.date = index
     
-    // Amount columns  
-    if (['amount', 'sum', 'сумма', 'сум', 'сумма операции', 'суммаоперации', 'стоимость', '金額', 'сумма по дебету'].includes(key) || originalHeader === '金額') {
+    // Amount columns (Generic amount, often Debit)
+    if (['amount', 'sum', 'сумма', 'сум', 'сумма операции', 'суммаоперации', 'стоимость', '金額'].includes(key) || originalHeader === '金額') {
       map.amount = index
-      map.debit_amount = index // For SberBank format
     }
     
-    // Credit amount columns (SberBank specific)
-    if (['сумма по кредиту'].includes(key)) {
+    // 🚩 FIX: Swap Debit/Credit assignments for SberBank format to correct the direction swap.
+    // This assumes the bank's 'Дебет' column holds the sales/incoming funds, and 'Кредит' holds the purchase/outgoing funds.
+
+    // Original header: 'сумма по дебету' (Debit) -> We assign it to the Credit logic path (Money IN / Sales)
+    if (['сумма по дебету'].includes(key) || key === 'сумма по дебету') {
       map.credit_amount = index
+    }
+
+    // Original header: 'сумма по кредиту' (Credit) -> We assign it to the Debit logic path (Money OUT / Purchases)
+    if (['сумма по кредиту'].includes(key) || key === 'сумма по кредиту') {
+      map.debit_amount = index
     }
     
     // VAT rate columns
@@ -234,6 +247,21 @@ function extractVatFromDescription(description: string): { rate: number; amount:
   if (/НДС не облагается|Без НДС|НДС не взимается/i.test(description)) {
     console.log('Pattern 2 matched (no VAT):', description)
     return { rate: 0, amount: 0 }
+  }
+  
+  // Pattern 6: Simple VAT declaration: "НДС - 1000.00" or "НДС 1000,00"
+  // It looks for "НДС" followed by optional non-word characters, then captures a number
+  // with possible decimal separators (dot, comma, space, hyphen)
+  const simpleVatAmount = description.match(/НДС\s*[-—:\s]*([\d\s\.,-]+)/i)
+  if (simpleVatAmount) {
+    let amountStr = simpleVatAmount[1].replace(/\s/g, '').replace(',', '.')
+    amountStr = amountStr.replace('-', '.')
+
+    const amount = parseFloat(amountStr)
+    if (Number.isFinite(amount) && amount > 0) {
+      console.log('Pattern 6 matched:', { rate: 0.20, amount, description })
+      return { rate: 0.20, amount }
+    }
   }
   
   // Pattern 3: "В том числе НДС 20 % - 21035.60 рублей"

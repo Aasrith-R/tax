@@ -23,10 +23,15 @@ export function computeVatAmount(amount: number, vatRate: number, existing?: unk
   if (Number.isFinite(fromFile) && fromFile !== 0) {
     return Math.abs(fromFile) // Ensure VAT amount is always positive
   }
-  
-  // Calculate VAT based on amount and rate
-  const calculatedVat = Math.abs(amount * vatRate)
-  
+
+  // Calculate VAT based on GROSS amount (bank statements usually contain gross sums)
+  if (!Number.isFinite(amount) || vatRate <= 0) {
+    return 0
+  }
+
+  // VAT = Gross * (rate / (1 + rate))
+  const calculatedVat = Math.abs(amount * (vatRate / (1 + vatRate)))
+
   // Handle rounding to 2 decimal places (kopecks)
   return Math.round(calculatedVat * 100) / 100
 }
