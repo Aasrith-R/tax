@@ -17,8 +17,8 @@ export function OperationsTable({ operations }: OperationsTableProps) {
   }
 
   return (
-    <div className="mt-4 w-full max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-white">
-      <table className="min-w-[720px] divide-y divide-slate-200 text-[10px] sm:text-[11px]">
+    <div className="mt-4 w-full max-w-full overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm p-2">
+      <table className="min-w-full divide-y divide-slate-200 text-sm">
         <thead className="bg-slate-50">
           <tr>
             <th className="px-3 py-2 text-left font-medium uppercase tracking-wide text-slate-400">Дата</th>
@@ -45,14 +45,16 @@ export function OperationsTable({ operations }: OperationsTableProps) {
                 <td className="max-w-[200px] truncate px-3 py-2 text-slate-900" title={op.counterparty}>
                   {op.counterparty || '—'}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-900">
-                  {op.amount.toLocaleString('ru-RU', {
-                    style: 'currency',
-                    currency: 'RUB',
-                  })}
+                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
+                  <span className={op.amount < 0 ? 'text-red-600 font-medium' : 'text-emerald-700 font-medium'}>
+                    {op.amount.toLocaleString('ru-RU', {
+                      style: 'currency',
+                      currency: 'RUB',
+                    })}
+                  </span>
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-700">
-                  {(op.vat_rate * 100).toFixed(1)}%
+                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-700" title={Number.isFinite(op.vat_rate) ? `${(op.vat_rate * 100).toFixed(1)}%` : '0.0%'}>
+                  {Number.isFinite(op.vat_rate) ? `${(op.vat_rate * 100).toFixed(1)}%` : '0.0%'}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-900">
                   {op.vat_amount.toLocaleString('ru-RU', {

@@ -113,24 +113,30 @@ function App() {
               </div>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+            <div className="grid gap-4">
               <div>
                 <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
                   <span className="font-medium text-slate-800">Аналитика по НДС</span>
                   <span>Разбивка по месяцам</span>
                 </div>
-                <TaxLoadChart data={chartData} />
-              </div>
 
-              <div className="flex flex-col gap-2">
-                {/* место под фильтры / экспорт */}
-                <button
-                  type="button"
-                  className="self-end rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-700 shadow-sm hover:bg-slate-50"
-                >
-                  Экспорт JSON
-                </button>
-                <OperationsTable operations={operations} />
+                <div className="rounded-lg bg-white p-4 shadow-sm">
+                  <TaxLoadChart data={chartData} />
+                </div>
+
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  <div className="text-sm text-slate-500">Показаны все строки; используйте фильтры для сужения</div>
+                  <button
+                    type="button"
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+                  >
+                    Экспорт JSON
+                  </button>
+                </div>
+
+                <div className="mt-4">
+                  <OperationsTable operations={operations} />
+                </div>
               </div>
             </div>
           </section>
