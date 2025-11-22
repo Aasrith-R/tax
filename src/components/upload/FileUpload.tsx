@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { Operation } from '../../types/operation'
-import { computeVatAmount, normalizeVatRate, validateOperation, detectDirection, extractVatFromDescription } from '../../lib/vat'
+import { computeVatAmount, normalizeVatRate, validateOperation, extractVatFromDescription } from '../../lib/vat'
 
 interface FileUploadProps {
   onParsed: (operations: Operation[]) => void
@@ -12,6 +12,15 @@ const ACCEPTED_TYPES = [
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]
+
+// Local direction detection fallback (keeps build free of unused-import errors)
+function detectDirectionLocal(amount: number, operationCode?: string | null): 'input' | 'output' {
+  if (operationCode === '01' || operationCode === '17') return 'input'
+  if (operationCode === '02') return 'output'
+  if (amount < 0) return 'input'
+  if (amount > 0) return 'output'
+  return 'output'
+}
 
 export function FileUpload({ onParsed }: FileUploadProps) {
   const [error, setError] = useState<string | null>(null)
@@ -60,17 +69,20 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             const counterparty = String(getCell(row, headerMap, 'counterparty') ?? '').trim()
             const paymentPurpose = String(getCell(row, headerMap, 'payment_purpose') ?? '').trim()
 
-            // For SberBank format: determine amount and direction from debit/credit columns
-            let rawAmount = rawDebitAmount || rawCreditAmount || 0
-            let direction: 'input' | 'output' = 'output' // default to output (debit)
-            
-            if (rawCreditAmount > 0) {
-              rawAmount = rawCreditAmount
-              direction = 'input'
-            } else if (rawDebitAmount > 0) {
-              rawAmount = -rawDebitAmount // Make debit amounts negative
-              direction = 'output'
+            // For SberBank format: determine amount from debit/credit columns and direction using VO when available
+            const operationCode = String(getCell(row, headerMap, 'vo') ?? '').trim() || undefined
+
+            let rawAmount = 0
+            if (rawDebitAmount > 0) {
+              rawAmount = -rawDebitAmount // debit = outgoing = negative
+            } else if (rawCreditAmount > 0) {
+              rawAmount = rawCreditAmount // credit = incoming = positive
+            } else {
+              rawAmount = 0
             }
+
+            // Determine direction using operation code when available, fallback to sign
+            const direction = detectDirectionLocal(rawAmount, operationCode)
 
             // Extract VAT info: prefer explicit vat_amount column or description parsing
             let vat_rate = normalizeVatRate(rawVatRate)
