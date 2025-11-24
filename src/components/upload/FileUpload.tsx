@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { Operation } from '../../types/operation'
-import { normalizeVatRate, validateOperation, extractVatFromDescription } from '../../lib/vat'
+import { computeVatAmount, normalizeVatRate, validateOperation, extractVatFromDescription } from '../../lib/vat'
 
 interface FileUploadProps {
   onParsed: (operations: Operation[]) => void
@@ -12,6 +12,43 @@ const ACCEPTED_TYPES = [
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]
+
+/**
+ * Extract counterparty name from Debit/Credit account string
+ * Format: "40702810038000147369\n7736289024\nООО "КЬЮ БИ ЭС""
+ * We want the third line (company name)
+ */
+function extractCounterpartyName(accountString: string): string {
+  if (!accountString) return ''
+  
+  // Split by newlines and clean up
+  const lines = accountString.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+  
+  // The counterparty name is typically on the 3rd line
+  if (lines.length >= 3) {
+    const name = lines[2]
+    // Clean up quotes if present
+    return name.replace(/^["']|["']$/g, '').trim()
+  }
+  
+  // Fallback: if we have 2 lines, the second is probably the name
+  if (lines.length === 2) {
+    const name = lines[1]
+    return name.replace(/^["']|["']$/g, '').trim()
+  }
+  
+  // Last fallback: return the longest line that doesn't look like account number
+  if (lines.length > 0) {
+    const nonAccountLines = lines.filter(l => !/^\d{20}$/.test(l) && !/^\d{10}$/.test(l))
+    if (nonAccountLines.length > 0) {
+      return nonAccountLines.reduce((longest, current) => 
+        current.length > longest.length ? current : longest
+      , '').replace(/^["']|["']$/g, '').trim()
+    }
+  }
+  
+  return ''
+}
 
 /**
  * CRITICAL FIX: Direction detection based ONLY on which column has the amount
@@ -70,6 +107,32 @@ export function FileUpload({ onParsed }: FileUploadProps) {
         const headerMap = buildHeaderIndex(headerRow as string[])
 
         console.log('Header mapping:', headerMap)
+        console.log('Headers found:', headerRow)
+        
+        // CRITICAL: If debit_account and credit_account not found, try to infer from structure
+        // SberBank format typically has structure: [Дата проводки] [Счет: Дебет] [Счет: Кредит] [Сумма по дебету] [Сумма по кредиту]
+        if (headerMap.debit_account === undefined || headerMap.credit_account === undefined) {
+          // Look for the second row which might have "Дебет" and "Кредит"
+          if (dataRows.length > 0) {
+            const possibleSubheader = dataRows[0]
+            possibleSubheader.forEach((cell: unknown, idx: number) => {
+              const cellText = String(cell || '').trim()
+              if (cellText === 'Дебет' && headerMap.debit_account === undefined) {
+                headerMap.debit_account = idx
+                console.log('Found Дебет account column at index:', idx)
+              }
+              if (cellText === 'Кредит' && headerMap.credit_account === undefined) {
+                headerMap.credit_account = idx
+                console.log('Found Кредит account column at index:', idx)
+              }
+            })
+            
+            // If we found subheaders, skip the subheader row
+            if (headerMap.debit_account !== undefined && headerMap.credit_account !== undefined) {
+              dataRows.shift() // Remove the subheader row
+            }
+          }
+        }
 
         const operations: Operation[] = dataRows
           .map((row, index) => {
@@ -81,8 +144,24 @@ export function FileUpload({ onParsed }: FileUploadProps) {
             const rawDate = getCell(row, headerMap, 'date')
             const rawDebitAmount = Number(getCell(row, headerMap, 'debit_amount') || 0)
             const rawCreditAmount = Number(getCell(row, headerMap, 'credit_amount') || 0)
-            const counterparty = String(getCell(row, headerMap, 'counterparty') ?? '').trim()
             const paymentPurpose = String(getCell(row, headerMap, 'payment_purpose') ?? '').trim()
+            
+            // Extract counterparty name from Debit or Credit account columns
+            let counterparty = ''
+            if (rawDebitAmount > 0) {
+              // For expenses (debit), get counterparty from Credit account column
+              const creditAccount = String(getCell(row, headerMap, 'credit_account') ?? '')
+              counterparty = extractCounterpartyName(creditAccount)
+            } else if (rawCreditAmount > 0) {
+              // For income (credit), get counterparty from Debit account column
+              const debitAccount = String(getCell(row, headerMap, 'debit_account') ?? '')
+              counterparty = extractCounterpartyName(debitAccount)
+            }
+            
+            // Fallback to explicit counterparty column if available
+            if (!counterparty) {
+              counterparty = String(getCell(row, headerMap, 'counterparty') ?? '').trim()
+            }
             
             // Skip rows without both amounts (likely header or summary rows)
             if (rawDebitAmount === 0 && rawCreditAmount === 0) {
@@ -132,7 +211,9 @@ export function FileUpload({ onParsed }: FileUploadProps) {
                 direction,
                 vat_amount,
                 vat_rate,
-                counterparty: counterparty || paymentPurpose?.substring(0, 50)
+                counterparty,
+                debitAccount: rawDebitAmount > 0 ? 'N/A' : String(getCell(row, headerMap, 'debit_account') ?? '').substring(0, 100),
+                creditAccount: rawCreditAmount > 0 ? 'N/A' : String(getCell(row, headerMap, 'credit_account') ?? '').substring(0, 100)
               })
             }
 
@@ -236,26 +317,50 @@ function buildHeaderIndex(headers: string[]) {
       map.date = index
     }
     
+    // Account columns - look for merged "Счет" header with subheaders
+    if (key === 'счет' || originalHeader === 'Счет') {
+      // In SberBank format, "Счет" is merged header with "Дебет" and "Кредит" below
+      // We'll detect these in the next row
+    }
+    
+    // Debit account (column D in your Excel - contains counterparty name)
+    if (originalHeader === 'Дебет' && key === 'дебет') {
+      map.debit_account = index
+    }
+    
+    // Credit account (column E in your Excel - contains counterparty name)
+    if (originalHeader === 'Кредит' && key === 'кредит') {
+      map.credit_account = index
+    }
+    
     // Debit amount (expenses - INPUT VAT) - CRITICAL COLUMN
-    if (['сумма по дебету', 'суммаподебету', 'дебет', 'debit'].includes(key)) {
+    if (key === 'суммаподебету' || originalHeader === 'Сумма по дебету') {
       map.debit_amount = index
     }
     
     // Credit amount (income - OUTPUT VAT) - CRITICAL COLUMN
-    if (['сумма по кредиту', 'суммапокредиту', 'кредит', 'credit'].includes(key)) {
+    if (key === 'суммапокредиту' || originalHeader === 'Сумма по кредиту') {
       map.credit_amount = index
     }
     
-    // Counterparty columns
-    if (['counterparty', 'контрагент', 'клиент', 'поставщик', 'партнер', 'организация', '相手先', 'банк (бик и наименование)', 'банк бик и наименование'].includes(key) || originalHeader === '相手先') {
+    // Counterparty columns (fallback)
+    if (['counterparty', 'контрагент', 'клиент', 'поставщик', 'партнер', 'организация', '相手先'].includes(key) || originalHeader === '相手先') {
       map.counterparty = index
     }
     
     // Payment purpose columns (SberBank specific - contains VAT info)
-    if (['назначение платежа', 'назначениеплатежа', 'payment purpose', 'purpose'].includes(key)) {
+    if (key === 'назначениеплатежа' || originalHeader === 'Назначение платежа') {
       map.payment_purpose = index
     }
   })
+  
+  // If we didn't find debit_account and credit_account by name, try to infer from structure
+  // In SberBank format: column after "Дата проводки" should be "Счет" group
+  if (map.date !== undefined && map.debit_account === undefined) {
+    // Typically: column 0 = Дата проводки, column 1 = Дебет, column 2 = Кредит
+    // But with merged cells, we need to look at actual data rows
+    console.log('Warning: Could not find Debit/Credit account columns by header. Will try to detect from data.')
+  }
   
   return map
 }
