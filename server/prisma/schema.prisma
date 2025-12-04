@@ -1,0 +1,68 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  reports   Report[]
+  
+  @@map("users")
+}
+
+model Report {
+  id          String      @id @default(cuid())
+  userId      String
+  title       String
+  status      ReportStatus @default(REQUIRES_REVIEW)
+  totals      Json        // Stores VatTotals as JSON
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operations  Operation[]
+  
+  @@map("reports")
+  @@index([userId])
+  @@index([status])
+}
+
+model Operation {
+  id          String   @id @default(cuid())
+  reportId    String
+  date        DateTime
+  amount      Float
+  vatRate     Float    @default(0)
+  vatAmount   Float    @default(0)
+  counterparty String
+  source      String
+  direction   String   // 'input' | 'output'
+  errors      Json?    // Array of error strings as JSON
+  
+  report      Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  
+  @@map("operations")
+  @@index([reportId])
+  @@index([date])
+}
+
+enum ReportStatus {
+  READY
+  REQUIRES_REVIEW
+}
+

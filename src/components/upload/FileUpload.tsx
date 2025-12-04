@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { Operation } from '../../types/operation'
-import { computeVatAmount, normalizeVatRate, validateOperation, extractVatFromDescription } from '../../lib/vat'
+import { normalizeVatRate, validateOperation, extractVatFromDescription } from '../../lib/vat'
 
 interface FileUploadProps {
   onParsed: (operations: Operation[]) => void
