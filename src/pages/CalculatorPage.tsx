@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import type { Operation } from '../types/operation'
 import { calculateTotals, groupNetVatByMonth } from '../lib/vat'
 import { FileUpload } from '../components/upload/FileUpload'
+import { OneCUpload } from '../components/upload/OneCUpload'
 import { OperationsTable } from '../components/dashboard/OperationsTable'
 import { TotalsBlock } from '../components/dashboard/TotalsBlock'
 import { TaxLoadChart } from '../components/dashboard/TaxLoadChart'
@@ -23,6 +24,7 @@ interface CalculatorPageProps {
 
 export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
   const [searchParams] = useSearchParams()
+  const [uploadTab, setUploadTab] = useState<'sberbank' | '1c'>('sberbank')
   const [operations, setOperations] = useState<Operation[]>([])
   const [currentReport, setCurrentReport] = useState<Report | null>(null)
   const [reportTitle, setReportTitle] = useState('')
@@ -182,7 +184,35 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
             </div>
 
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-6 py-10 shadow-sm">
-              <FileUpload onParsed={setOperations} />
+              {/* Upload format tabs */}
+              <div className="mb-6 flex gap-2 border-b border-slate-200">
+                <button
+                  onClick={() => setUploadTab('sberbank')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    uploadTab === 'sberbank'
+                      ? 'border-b-2 border-sky-600 text-sky-600'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  СберБанк
+                </button>
+                <button
+                  onClick={() => setUploadTab('1c')}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    uploadTab === '1c'
+                      ? 'border-b-2 border-purple-600 text-purple-600'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  1С:Бухгалтерия
+                </button>
+              </div>
+              
+              {uploadTab === 'sberbank' ? (
+                <FileUpload onParsed={setOperations} />
+              ) : (
+                <OneCUpload onParsed={setOperations} />
+              )}
             </div>
 
             {!currentReport && (
@@ -277,7 +307,35 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
                     )}
                   </>
                 )}
-                <FileUpload onParsed={setOperations} />
+                {/* Upload format tabs */}
+                <div className="mb-4 flex gap-2 border-b border-slate-200">
+                  <button
+                    onClick={() => setUploadTab('sberbank')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors ${
+                      uploadTab === 'sberbank'
+                        ? 'border-b-2 border-sky-600 text-sky-600'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    СберБанк
+                  </button>
+                  <button
+                    onClick={() => setUploadTab('1c')}
+                    className={`px-4 py-2 text-sm font-medium transition-colors ${
+                      uploadTab === '1c'
+                        ? 'border-b-2 border-purple-600 text-purple-600'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    1С:Бухгалтерия
+                  </button>
+                </div>
+                
+                {uploadTab === 'sberbank' ? (
+                  <FileUpload onParsed={setOperations} />
+                ) : (
+                  <OneCUpload onParsed={setOperations} />
+                )}
               </div>
             </div>
 

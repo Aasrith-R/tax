@@ -44,9 +44,14 @@ export function Navbar({ user, onUserChange, showAuthModal, onShowAuthModal }: N
                   Калькулятор
                 </a>
                 {user && (
-                  <a href="/reports" className="text-sm font-medium text-slate-700 hover:text-sky-600 transition-colors">
-                    Мои отчеты
-                  </a>
+                  <>
+                    <a href="/reports" className="text-sm font-medium text-slate-700 hover:text-sky-600 transition-colors">
+                      Мои отчеты
+                    </a>
+                    <a href="/chat" className="text-sm font-medium text-slate-700 hover:text-sky-600 transition-colors">
+                      Спросить у ИИ
+                    </a>
+                  </>
                 )}
               </div>
             </div>

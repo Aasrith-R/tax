@@ -3,6 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import { authRouter } from './routes/auth.js'
 import { reportsRouter } from './routes/reports.js'
+import { chatRouter } from './routes/chat.js'
 import { errorHandler } from './middleware/errorHandler.js'
 
 dotenv.config()
@@ -41,6 +42,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }))
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
 
 // Health check
 app.get('/health', (req, res) => {
@@ -50,6 +52,7 @@ app.get('/health', (req, res) => {
 // Routes
 app.use('/api/auth', authRouter)
 app.use('/api/reports', reportsRouter)
+app.use('/api/chat', chatRouter)
 
 // Error handling
 app.use(errorHandler)

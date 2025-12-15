@@ -84,6 +84,7 @@ export function FileUpload({ onParsed }: FileUploadProps) {
       return
     }
 
+    const isCSV = file.name.toLowerCase().endsWith('.csv')
     const reader = new FileReader()
     
     reader.onerror = () => {
@@ -92,8 +93,22 @@ export function FileUpload({ onParsed }: FileUploadProps) {
 
     reader.onload = () => {
       try {
-        const data = new Uint8Array(reader.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
+        let workbook: XLSX.WorkBook
+        
+        if (isCSV) {
+          // For CSV files, read as text
+          const csvText = reader.result as string
+          workbook = XLSX.read(csvText, { 
+            type: 'string',
+            FS: ',', // Field separator
+            RS: '\n' // Row separator
+          })
+        } else {
+          // For Excel files, read as binary
+          const data = new Uint8Array(reader.result as ArrayBuffer)
+          workbook = XLSX.read(data, { type: 'array' })
+        }
+        
         const sheetName = workbook.SheetNames[0]
         const sheet = workbook.Sheets[sheetName]
         const rows: any[] = XLSX.utils.sheet_to_json(sheet, { header: 1 })
@@ -105,9 +120,50 @@ export function FileUpload({ onParsed }: FileUploadProps) {
 
         const { headerRow, dataRows } = findHeaderAndDataRows(rows)
         const headerMap = buildHeaderIndex(headerRow as string[])
-
-        console.log('Header mapping:', headerMap)
-        console.log('Headers found:', headerRow)
+        
+        // Log column mapping for debugging
+        console.log('\n📊 File Upload - Column Mapping:')
+        console.log('═══════════════════════════════════════════════════════════')
+        console.log('Detected columns (0-based index):')
+        if (headerMap.date !== undefined) {
+          const dateHeader = headerRow[headerMap.date]
+          console.log(`  Column ${headerMap.date}: Date - "${dateHeader}"`)
+        }
+        if (headerMap.debit_account !== undefined) {
+          const debitHeader = headerRow[headerMap.debit_account]
+          console.log(`  Column ${headerMap.debit_account}: Debit Account - "${debitHeader}" - extracts counterparty name`)
+        }
+        if (headerMap.credit_account !== undefined) {
+          const creditHeader = headerRow[headerMap.credit_account]
+          console.log(`  Column ${headerMap.credit_account}: Credit Account - "${creditHeader}" - extracts counterparty name`)
+        }
+        if (headerMap.debit_amount !== undefined) {
+          const debitAmtHeader = headerRow[headerMap.debit_amount]
+          console.log(`  Column ${headerMap.debit_amount}: Debit Amount - "${debitAmtHeader}" - INPUT VAT (deductible)`)
+        }
+        if (headerMap.credit_amount !== undefined) {
+          const creditAmtHeader = headerRow[headerMap.credit_amount]
+          console.log(`  Column ${headerMap.credit_amount}: Credit Amount - "${creditAmtHeader}" - OUTPUT VAT (payable)`)
+        }
+        if (headerMap.document_amount !== undefined) {
+          const docAmtHeader = headerRow[headerMap.document_amount]
+          console.log(`  Column ${headerMap.document_amount}: Document Amount (1C format) - "${docAmtHeader}"`)
+        }
+        if (headerMap.operation_type !== undefined) {
+          const opTypeHeader = headerRow[headerMap.operation_type]
+          console.log(`  Column ${headerMap.operation_type}: Operation Type (1C format) - "${opTypeHeader}" - determines direction`)
+        }
+        if (headerMap.payment_purpose !== undefined) {
+          const purposeHeader = headerRow[headerMap.payment_purpose]
+          console.log(`  Column ${headerMap.payment_purpose}: Payment Purpose - "${purposeHeader}" - extracts VAT info`)
+        }
+        if (headerMap.counterparty !== undefined) {
+          const counterpartyHeader = headerRow[headerMap.counterparty]
+          console.log(`  Column ${headerMap.counterparty}: Counterparty - "${counterpartyHeader}" - fallback for counterparty name`)
+        }
+        console.log('═══════════════════════════════════════════════════════════')
+        console.log(`Total rows to process: ${dataRows.length}`)
+        console.log('═══════════════════════════════════════════════════════════\n')
         
         // CRITICAL: If debit_account and credit_account not found, try to infer from structure
         // SberBank format typically has structure: [Дата проводки] [Счет: Дебет] [Счет: Кредит] [Сумма по дебету] [Сумма по кредиту]
@@ -119,11 +175,9 @@ export function FileUpload({ onParsed }: FileUploadProps) {
               const cellText = String(cell || '').trim()
               if (cellText === 'Дебет' && headerMap.debit_account === undefined) {
                 headerMap.debit_account = idx
-                console.log('Found Дебет account column at index:', idx)
               }
               if (cellText === 'Кредит' && headerMap.credit_account === undefined) {
                 headerMap.credit_account = idx
-                console.log('Found Кредит account column at index:', idx)
               }
             })
             
@@ -163,16 +217,34 @@ export function FileUpload({ onParsed }: FileUploadProps) {
               counterparty = String(getCell(row, headerMap, 'counterparty') ?? '').trim()
             }
             
-            // Skip rows without both amounts (likely header or summary rows)
-            if (rawDebitAmount === 0 && rawCreditAmount === 0) {
-              return null
+            // Handle 1C format: check for document_amount if debit/credit amounts not found
+            let rawAmount = rawDebitAmount > 0 ? rawDebitAmount : rawCreditAmount
+            let direction: 'input' | 'output' = detectDirectionLocal(rawDebitAmount, rawCreditAmount)
+            
+            if (rawAmount === 0 && headerMap.document_amount !== undefined) {
+              // 1C format: use document amount
+              const docAmount = Number(row[headerMap.document_amount] || 0)
+              if (docAmount !== 0) {
+                rawAmount = Math.abs(docAmount)
+                // Try to determine direction from operation type or payment purpose
+                const operationType = String(getCell(row, headerMap, 'operation_type') || '').toLowerCase()
+                const purpose = paymentPurpose.toLowerCase()
+                
+                // In 1C, "ОтПокупателя" usually means income (output VAT)
+                // Other operations might be expenses (input VAT)
+                if (operationType.includes('отпокупателя') || purpose.includes('от покупателя')) {
+                  direction = 'output'
+                } else {
+                  // Default to input for expenses
+                  direction = 'input'
+                }
+              }
             }
             
-            // CRITICAL: Determine direction ONLY from which column has the amount
-            const direction = detectDirectionLocal(rawDebitAmount, rawCreditAmount)
-            
-            // For amount: use the non-zero value (always positive)
-            const rawAmount = rawDebitAmount > 0 ? rawDebitAmount : rawCreditAmount
+            // Skip rows without any amount (likely header or summary rows)
+            if (rawAmount === 0) {
+              return null
+            }
             
             // Extract VAT from payment purpose description
             let vat_amount = 0
@@ -201,21 +273,6 @@ export function FileUpload({ onParsed }: FileUploadProps) {
               }
             }
             
-            // Debug logging for first few rows and credit operations
-            if (index < 10 || rawCreditAmount > 0) {
-              console.log(`Row ${index}:`, {
-                rawDate,
-                debit: rawDebitAmount,
-                credit: rawCreditAmount,
-                amount: rawAmount,
-                direction,
-                vat_amount,
-                vat_rate,
-                counterparty,
-                debitAccount: rawDebitAmount > 0 ? 'N/A' : String(getCell(row, headerMap, 'debit_account') ?? '').substring(0, 100),
-                creditAccount: rawCreditAmount > 0 ? 'N/A' : String(getCell(row, headerMap, 'credit_account') ?? '').substring(0, 100)
-              })
-            }
 
             const op: Operation = {
               id: `${file.name}-${index}`,
@@ -237,11 +294,6 @@ export function FileUpload({ onParsed }: FileUploadProps) {
           })
           .filter((op): op is Operation => op !== null)
 
-        console.log(`Parsed ${operations.length} operations`)
-        const inputOps = operations.filter(op => op.direction === 'input')
-        const outputOps = operations.filter(op => op.direction === 'output')
-        console.log(`Input operations: ${inputOps.length}, Output operations: ${outputOps.length}`)
-        console.log('Sample output operations:', outputOps.slice(0, 5))
 
         setError(null)
         onParsed(operations)
@@ -251,7 +303,12 @@ export function FileUpload({ onParsed }: FileUploadProps) {
       }
     }
 
-    reader.readAsArrayBuffer(file)
+    // Use appropriate read method based on file type
+    if (isCSV) {
+      reader.readAsText(file, 'UTF-8')
+    } else {
+      reader.readAsArrayBuffer(file)
+    }
   }
 
   return (
@@ -282,11 +339,15 @@ function findHeaderAndDataRows(rows: any[]): { headerRow: any[]; dataRows: any[]
     return row.some(cell => {
       if (cell == null) return false
       const text = String(cell).trim().toLowerCase()
+      const originalText = String(cell).trim()
       return (
         text.includes('дата проводки') ||
         text.includes('дата операции') ||
         text === 'дата' ||
-        text === 'date'
+        text === 'date' ||
+        originalText === 'Date' || // 1C format
+        originalText === 'СуммаДокумента' || // 1C format
+        originalText === 'НазначениеПлатежа' // 1C format
       )
     })
   })
@@ -312,8 +373,13 @@ function buildHeaderIndex(headers: string[]) {
     
     const originalHeader = String(h || '').trim()
     
-    // Date columns
+    // Date columns - support both SberBank and 1C formats
     if (['date', 'дата', 'дат', 'дата операции', 'датаоперации', '日付', 'дата проводки', 'датапроводки'].includes(key) || originalHeader === '日付') {
+      map.date = index
+    }
+    
+    // 1C format: "Date" column (ISO format)
+    if (originalHeader === 'Date' && map.date === undefined) {
       map.date = index
     }
     
@@ -348,9 +414,24 @@ function buildHeaderIndex(headers: string[]) {
       map.counterparty = index
     }
     
-    // Payment purpose columns (SberBank specific - contains VAT info)
-    if (key === 'назначениеплатежа' || originalHeader === 'Назначение платежа') {
+    // Payment purpose columns (SberBank and 1C formats - contains VAT info)
+    if (key === 'назначениеплатежа' || originalHeader === 'Назначение платежа' || originalHeader === 'НазначениеПлатежа') {
       map.payment_purpose = index
+    }
+    
+    // 1C format: Document amount (СуммаДокумента)
+    if (originalHeader === 'СуммаДокумента' || key === 'суммадокумента') {
+      // This could be either debit or credit depending on direction
+      // We'll need to determine direction from other fields
+      if (map.debit_amount === undefined && map.credit_amount === undefined) {
+        // Use as both for now, will determine direction later
+        map.document_amount = index
+      }
+    }
+    
+    // 1C format: Direction field (ВидОперации)
+    if (originalHeader === 'ВидОперации' || key === 'видоперации') {
+      map.operation_type = index
     }
   })
   
@@ -359,7 +440,6 @@ function buildHeaderIndex(headers: string[]) {
   if (map.date !== undefined && map.debit_account === undefined) {
     // Typically: column 0 = Дата проводки, column 1 = Дебет, column 2 = Кредит
     // But with merged cells, we need to look at actual data rows
-    console.log('Warning: Could not find Debit/Credit account columns by header. Will try to detect from data.')
   }
   
   return map

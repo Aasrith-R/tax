@@ -5,6 +5,7 @@ import { Navbar } from './components/layout/Navbar'
 import { LandingPage } from './pages/LandingPage'
 import { CalculatorPage } from './pages/CalculatorPage'
 import { ReportsPage } from './pages/ReportsPage'
+import { ChatPage } from './pages/ChatPage'
 import { authApi, getToken, removeToken, type User } from './services/api'
 
 function App() {
@@ -45,6 +46,7 @@ function App() {
           } 
         />
         <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/chat" element={<ChatPage />} />
       </Routes>
     </div>
   )

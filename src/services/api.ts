@@ -7,7 +7,7 @@ const getApiBaseUrl = () => {
     return '/api'
   }
   // In development, use environment variable or default
-  return import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080/api'
+  return import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000/api'
 }
 
 const API_BASE_URL = getApiBaseUrl()
@@ -160,6 +160,75 @@ export const reportsApi = {
     return apiRequest<{ message: string }>(`/reports/${id}`, {
       method: 'DELETE',
     })
+  },
+}
+
+// Chat API
+export interface ChatRequest {
+  message: string
+  attachments?: Array<{
+    id: string
+    name: string
+    type: string
+    size: number
+    file: File
+  }>
+  reportId?: string
+  operations?: any[]
+}
+
+export interface ChatResponse {
+  content: string
+}
+
+async function apiRequestWithFiles<T>(
+  endpoint: string,
+  data: ChatRequest
+): Promise<T> {
+  const token = getToken()
+  const formData = new FormData()
+  
+  formData.append('message', data.message)
+  
+  if (data.reportId) {
+    formData.append('reportId', data.reportId)
+  }
+  
+  if (data.operations) {
+    formData.append('operations', JSON.stringify(data.operations))
+  }
+  
+  if (data.attachments && data.attachments.length > 0) {
+    data.attachments.forEach((att, index) => {
+      formData.append(`attachment_${index}`, att.file)
+      formData.append(`attachment_${index}_name`, att.name)
+      formData.append(`attachment_${index}_type`, att.type)
+    })
+  }
+
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  // Don't set Content-Type for FormData - browser will set it with boundary
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Ошибка сервера' }))
+    throw new Error(error.error || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+export const chatApi = {
+  async sendMessage(request: ChatRequest): Promise<ChatResponse> {
+    return apiRequestWithFiles<ChatResponse>('/chat', request)
   },
 }
 

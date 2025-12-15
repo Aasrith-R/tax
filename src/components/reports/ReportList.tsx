@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { reportsApi, type Report } from '../../services/api'
 import { removeToken } from '../../services/api'
+import { KNDModal, type InvoiceData } from './KNDModal'
+import { KNDPreviewModal } from './KNDPreviewModal'
+import { generateKNDPDF, downloadPDF } from '../../lib/kndGenerator'
 
 interface ReportListProps {
   onSelectReport: (report: Report) => void
@@ -12,6 +15,12 @@ export function ReportList({ onSelectReport, onCreateNew, onLogout }: ReportList
   const [reports, setReports] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null)
+  const [isKNDModalOpen, setIsKNDModalOpen] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [previewPdfBlob, setPreviewPdfBlob] = useState<Blob | null>(null)
+  const [previewFilename, setPreviewFilename] = useState('')
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
 
   const loadReports = async () => {
     try {
@@ -40,6 +49,54 @@ export function ReportList({ onSelectReport, onCreateNew, onLogout }: ReportList
       await loadReports()
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Ошибка удаления')
+    }
+  }
+
+  const handleConvertToKND = (report: Report, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSelectedReport(report)
+    setIsKNDModalOpen(true)
+  }
+
+  const handleGenerateKND = async (inn: string, kpp: string, invoiceData?: InvoiceData[]) => {
+    if (!selectedReport) return
+
+    try {
+      setGenerating(true)
+      
+      console.log('\n📤 ReportList - handleGenerateKND called:')
+      console.log('  Invoice data provided:', invoiceData ? `Yes (${invoiceData.length} items)` : 'No')
+      if (invoiceData && invoiceData.length > 0) {
+        console.log('  Invoice data[0] details:')
+        console.log('    invoiceNumber:', invoiceData[0].invoiceNumber)
+        console.log('    sellerName:', invoiceData[0].sellerName || '(null/empty)')
+        console.log('    sellerInn:', invoiceData[0].sellerInn || '(null/empty)')
+        console.log('    sellerKpp:', invoiceData[0].sellerKpp || '(null/empty)')
+        console.log('    Full invoiceData[0]:', JSON.stringify(invoiceData[0], null, 2))
+      }
+      
+      // Fetch full report data with operations if needed
+      const fullReport = await reportsApi.getById(selectedReport.id)
+      
+      // Generate PDF
+      const pdfBlob = await generateKNDPDF(fullReport.report, inn, kpp, invoiceData)
+      
+      // Set preview data and show preview modal
+      const filename = `КНД_${selectedReport.title}_${new Date().toISOString().split('T')[0]}.pdf`
+      setPreviewFilename(filename)
+      setPreviewPdfBlob(pdfBlob)
+      setIsPreviewOpen(true)
+    } catch (err) {
+      console.error('Error generating KND:', err)
+      alert(err instanceof Error ? err.message : 'Ошибка при генерации КНД формы')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleDownloadFromPreview = () => {
+    if (previewPdfBlob) {
+      downloadPDF(previewPdfBlob, previewFilename)
     }
   }
 
@@ -139,20 +196,66 @@ export function ReportList({ onSelectReport, onCreateNew, onLogout }: ReportList
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDelete(report.id)
-                  }}
-                  className="ml-4 rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50"
-                >
-                  Удалить
-                </button>
+                <div className="ml-4 flex gap-2">
+                  <button
+                    onClick={(e) => handleConvertToKND(report, e)}
+                    className="rounded-lg px-3 py-1 text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200"
+                  >
+                    КНД 1151001
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDelete(report.id)
+                    }}
+                    className="rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                  >
+                    Удалить
+                  </button>
+                </div>
               </div>
             </div>
           ))}
         </div>
       )}
+
+      {selectedReport && (
+        <KNDModal
+          report={selectedReport}
+          isOpen={isKNDModalOpen}
+          onClose={() => {
+            setIsKNDModalOpen(false)
+            setSelectedReport(null)
+          }}
+          onGenerate={handleGenerateKND}
+        />
+      )}
+
+      {generating && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-xl shadow-xl p-6">
+            <div className="flex items-center gap-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-sky-600"></div>
+              <p className="text-sm text-slate-700">Генерация КНД формы...</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <KNDPreviewModal
+        isOpen={isPreviewOpen}
+        pdfBlob={previewPdfBlob}
+        filename={previewFilename}
+        onClose={() => {
+          setIsPreviewOpen(false)
+          // Clean up blob URL after a delay to allow iframe to finish
+          setTimeout(() => {
+            setPreviewPdfBlob(null)
+            setPreviewFilename('')
+          }, 100)
+        }}
+        onDownload={handleDownloadFromPreview}
+      />
     </div>
   )
 }
