@@ -1,8 +1,15 @@
 import express from 'express'
 import multer from 'multer'
+import { PrismaClient } from '@prisma/client'
 import { authenticateToken } from '../middleware/auth.js'
 
 const router = express.Router()
+const prisma = new PrismaClient()
+
+// DeepSeek API configuration
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || ''
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat'
 
 // Configure multer for file uploads
 const upload = multer({
@@ -23,7 +30,7 @@ const uploadFields = upload.fields([
 
 router.post('/', authenticateToken, uploadFields, async (req, res, next) => {
   try {
-    const { message, reportId, operations } = req.body
+    const { message, reportId, operations, chatId } = req.body
     
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'Message is required' })
@@ -65,17 +72,59 @@ router.post('/', authenticateToken, uploadFields, async (req, res, next) => {
       }
     }
 
-    // TODO: Integrate with AI service (OpenAI, Anthropic, etc.)
-    // For now, return a mock response
+    // Get userId from authenticated request
+    const userId = (req as any).userId
+    if (!userId) {
+      return res.status(401).json({ error: 'Пользователь не авторизован' })
+    }
+
+    // Get or create chat
+    let chat
+    if (chatId) {
+      chat = await prisma.chat.findFirst({
+        where: { id: chatId, userId },
+      })
+      if (!chat) {
+        return res.status(404).json({ error: 'Чат не найден' })
+      }
+    } else {
+      // Create new chat with first message as title
+      const title = message.length > 50 ? message.substring(0, 50) + '...' : message
+      chat = await prisma.chat.create({
+        data: {
+          userId,
+          title,
+        },
+      })
+    }
+
+    // Save user message
+    await prisma.chatMessage.create({
+      data: {
+        chatId: chat.id,
+        role: 'user',
+        content: message,
+      },
+    })
+
     const response = await generateAIResponse({
       message,
       attachments,
       reportId,
       operations: operationsData,
-      userId: (req as any).user.id,
+      userId,
     })
 
-    res.json({ content: response })
+    // Save assistant response
+    await prisma.chatMessage.create({
+      data: {
+        chatId: chat.id,
+        role: 'assistant',
+        content: response,
+      },
+    })
+
+    res.json({ content: response, chatId: chat.id })
   } catch (error) {
     next(error)
   }
@@ -92,15 +141,19 @@ interface GenerateResponseParams {
 async function generateAIResponse(params: GenerateResponseParams): Promise<string> {
   const { message, attachments, reportId, operations } = params
 
-  // TODO: Implement actual AI integration
-  // This is a placeholder that demonstrates the structure
-  
-  let contextInfo = ''
-  
+  try {
+    // Build context for the AI
+    let systemContext = `Ты - помощник по налоговому учету и НДС в России. Помогаешь пользователям с вопросами о налогах, отчетности и работе с 1С.
+Отвечай на русском языке, профессионально и понятно.`
+
+    let userContext = message
+    
+    // Add report context
   if (reportId) {
-    contextInfo += `\nКонтекст: Отчет ${reportId}`
+      systemContext += `\n\nКонтекст: Пользователь работает с отчетом ${reportId}`
   }
   
+    // Add operations context
   if (operations && operations.length > 0) {
     const totalOperations = operations.length
     const inputVat = operations
@@ -109,34 +162,138 @@ async function generateAIResponse(params: GenerateResponseParams): Promise<strin
     const outputVat = operations
       .filter((op: any) => op.direction === 'output')
       .reduce((sum: number, op: any) => sum + (op.vatAmount || 0), 0)
-    
-    contextInfo += `\nОпераций в контексте: ${totalOperations}`
-    contextInfo += `\nВходящий НДС: ${inputVat.toLocaleString('ru-RU')} ₽`
-    contextInfo += `\nИсходящий НДС: ${outputVat.toLocaleString('ru-RU')} ₽`
+      const netVat = outputVat - inputVat
+      
+      systemContext += `\n\nДанные из отчета:
+- Всего операций: ${totalOperations}
+- Входящий НДС (к вычету): ${inputVat.toLocaleString('ru-RU')} ₽
+- Исходящий НДС (к уплате): ${outputVat.toLocaleString('ru-RU')} ₽
+- К доплате в бюджет: ${netVat.toLocaleString('ru-RU')} ₽`
   }
   
+    // Add attachments info
   if (attachments.length > 0) {
-    contextInfo += `\nПрикреплено файлов: ${attachments.length}`
+      systemContext += `\n\nПрикреплено файлов: ${attachments.length}`
     attachments.forEach((att, idx) => {
-      contextInfo += `\n  ${idx + 1}. ${att.name} (${att.type})`
+        systemContext += `\n  ${idx + 1}. ${att.name} (${att.type})`
     })
+      // Note: File processing can be added later if needed
+    }
+
+    // Call DeepSeek API (OpenAI-compatible format)
+    const response = await fetch(DEEPSEEK_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        messages: [
+          { role: 'system', content: systemContext },
+          { role: 'user', content: userContext },
+        ],
+        stream: false,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorData = await response.text()
+      throw new Error(`DeepSeek API error: ${response.status} ${response.statusText} - ${errorData}`)
+    }
+
+    const data = await response.json() as any
+    const text = data.choices?.[0]?.message?.content || 'Извините, не удалось получить ответ от AI.'
+
+    return text
+  } catch (error: any) {
+    console.error('DeepSeek API error:', error)
+    
+    // Fallback response if API fails
+    return `Извините, произошла ошибка при обработке запроса: ${error.message || 'Неизвестная ошибка'}. Пожалуйста, попробуйте еще раз.`
   }
-
-  // Mock response - replace with actual AI call
-  const mockResponse = `Я получил ваш вопрос: "${message}"${contextInfo ? '\n\n' + contextInfo : ''}
-
-Пока что это демонстрационный ответ. Для полноценной работы необходимо:
-1. Настроить API ключ для AI сервиса (OpenAI, Anthropic, и т.д.)
-2. Реализовать обработку прикрепленных файлов (PDF, Word, Excel)
-3. Интегрировать анализ данных из ваших отчетов
-
-Вопрос будет обработан с учетом:
-${reportId ? `- Отчета ${reportId}` : ''}
-${operations && operations.length > 0 ? `- ${operations.length} операций из базы данных` : ''}
-${attachments.length > 0 ? `- ${attachments.length} прикрепленных файлов` : ''}`
-
-  return mockResponse
 }
+
+// Get all chats for user
+router.get('/', authenticateToken, async (req, res, next) => {
+  try {
+    const userId = (req as any).userId
+    if (!userId) {
+      return res.status(401).json({ error: 'Пользователь не авторизован' })
+    }
+
+    const chats = await prisma.chat.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        _count: {
+          select: { messages: true },
+        },
+      },
+    })
+
+    res.json({ chats })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// Get specific chat with messages
+router.get('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const userId = (req as any).userId
+    const chatId = req.params.id
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Пользователь не авторизован' })
+    }
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: chatId, userId },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    })
+
+    if (!chat) {
+      return res.status(404).json({ error: 'Чат не найден' })
+    }
+
+    res.json({ chat })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// Delete chat
+router.delete('/:id', authenticateToken, async (req, res, next) => {
+  try {
+    const userId = (req as any).userId
+    const chatId = req.params.id
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Пользователь не авторизован' })
+    }
+
+    const chat = await prisma.chat.findFirst({
+      where: { id: chatId, userId },
+    })
+
+    if (!chat) {
+      return res.status(404).json({ error: 'Чат не найден' })
+    }
+
+    await prisma.chat.delete({
+      where: { id: chatId },
+    })
+
+    res.json({ message: 'Чат удален' })
+  } catch (error) {
+    next(error)
+  }
+})
 
 export { router as chatRouter }
 

@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import type { Operation } from '../types/operation'
 import { calculateTotals, groupNetVatByMonth } from '../lib/vat'
 import { FileUpload } from '../components/upload/FileUpload'
@@ -7,6 +7,7 @@ import { OneCUpload } from '../components/upload/OneCUpload'
 import { OperationsTable } from '../components/dashboard/OperationsTable'
 import { TotalsBlock } from '../components/dashboard/TotalsBlock'
 import { TaxLoadChart } from '../components/dashboard/TaxLoadChart'
+import { KNDModal } from '../components/reports/KNDModal'
 import { ToastContainer } from '../components/common/ToastContainer'
 import { reportsApi, type User, type Report } from '../services/api'
 import type { ToastType } from '../components/common/Toast'
@@ -24,6 +25,7 @@ interface CalculatorPageProps {
 
 export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [uploadTab, setUploadTab] = useState<'sberbank' | '1c'>('sberbank')
   const [operations, setOperations] = useState<Operation[]>([])
   const [currentReport, setCurrentReport] = useState<Report | null>(null)
@@ -31,6 +33,16 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
   const [toasts, setToasts] = useState<ToastData[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [showKNDModal, setShowKNDModal] = useState(false)
+  
+  // Filters and settings
+  const [selectedYears, setSelectedYears] = useState<number[]>([])
+  const [columnVisibility, setColumnVisibility] = useState({
+    company: false, // false = column is hidden, true = column is shown
+    counterparty: false,
+    payment_name: false,
+  })
+  const [showFilters, setShowFilters] = useState(false)
 
   // Load report if reportId is in URL
   useEffect(() => {
@@ -60,8 +72,29 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
     }
   }, [searchParams, currentReport])
 
-  const totals = useMemo(() => calculateTotals(operations), [operations])
-  const chartData = useMemo(() => groupNetVatByMonth(operations), [operations])
+  // Get available years from operations
+  const availableYears = useMemo(() => {
+    const years = new Set<number>()
+    operations.forEach(op => {
+      if (op.date) {
+        years.add(new Date(op.date).getFullYear())
+      }
+    })
+    return Array.from(years).sort((a, b) => b - a)
+  }, [operations])
+
+  // Filter operations by selected years
+  const filteredOperations = useMemo(() => {
+    if (selectedYears.length === 0) return operations
+    return operations.filter(op => {
+      if (!op.date) return false
+      const year = new Date(op.date).getFullYear()
+      return selectedYears.includes(year)
+    })
+  }, [operations, selectedYears])
+
+  const totals = useMemo(() => calculateTotals(filteredOperations), [filteredOperations])
+  const chartData = useMemo(() => groupNetVatByMonth(filteredOperations), [filteredOperations])
 
   const showToast = useCallback((message: string, type: ToastType = 'info') => {
     const id = Math.random().toString(36).substring(7)
@@ -211,7 +244,7 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
               {uploadTab === 'sberbank' ? (
                 <FileUpload onParsed={setOperations} />
               ) : (
-                <OneCUpload onParsed={setOperations} />
+                <OneCUpload onParsed={setOperations} autoLoadSample sampleUrl="/receipts_documents.csv" />
               )}
             </div>
 
@@ -266,7 +299,8 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
                   )}
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Анализ {operations.length.toLocaleString('ru-RU')} операций
+                  Анализ {filteredOperations.length.toLocaleString('ru-RU')} операций
+                  {selectedYears.length > 0 && ` (отфильтровано из ${operations.length})`}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -305,6 +339,52 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
                         Отметить готовым
                       </button>
                     )}
+                    <button
+                      onClick={async () => {
+                        try {
+                          // Save report first if not saved
+                          if (!currentReport) {
+                            setIsSaving(true)
+
+                            // Check if we have data to save
+                            if (!reportTitle.trim()) {
+                              showToast('Введите название отчета', 'warning')
+                              return
+                            }
+
+                            if (operations.length === 0) {
+                              showToast('Нет операций для сохранения', 'warning')
+                              return
+                            }
+
+                            // Save the report
+                            const response = await reportsApi.create(reportTitle, operations, totals)
+                            setCurrentReport(response.report)
+                            setLastSaved(new Date())
+                            showToast('Отчет сохранен', 'success')
+
+                            // Redirect to reports page with the new report
+                            navigate(`/reports?reportId=${response.report.id}`)
+                            return
+                          }
+
+                          // For existing reports, just open KND modal
+                          setShowKNDModal(true)
+                        } catch (err) {
+                          console.error('Save report error:', err)
+                          showToast(err instanceof Error ? err.message : 'Ошибка сохранения отчета', 'error')
+                        } finally {
+                          setIsSaving(false)
+                        }
+                      }}
+                      disabled={isSaving}
+                      className="rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm flex items-center gap-1.5"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      КНД
+                    </button>
                   </>
                 )}
                 {/* Upload format tabs */}
@@ -334,7 +414,7 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
                 {uploadTab === 'sberbank' ? (
                   <FileUpload onParsed={setOperations} />
                 ) : (
-                  <OneCUpload onParsed={setOperations} />
+                  <OneCUpload onParsed={setOperations} autoLoadSample sampleUrl="/receipts_documents.csv" />
                 )}
               </div>
             </div>
@@ -370,25 +450,134 @@ export function CalculatorPage({ user, onShowAuthModal }: CalculatorPageProps) {
               </div>
             </div>
 
-            <div className="grid gap-4">
-              <div>
-                <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
-                  <span className="font-medium text-slate-800">Аналитика по НДС</span>
-                  <span>Разбивка по месяцам</span>
-                </div>
+            {/* Filters and Column Settings */}
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm text-xs">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-slate-900">Фильтры и настройки</h3>
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className="text-[11px] text-sky-600 hover:text-sky-700 flex items-center gap-1"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                  </svg>
+                  {showFilters ? 'Скрыть' : 'Показать'}
+                </button>
+              </div>
+              
+              {showFilters && (
+                <div className="space-y-3">
+                  {/* Year filter */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-2">
+                      Период (годы):
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableYears.map(year => (
+                        <label key={year} className="inline-flex items-center gap-1.5 cursor-pointer rounded-full border border-slate-200 px-2 py-0.5 hover:border-sky-300">
+                          <input
+                            type="checkbox"
+                            checked={selectedYears.includes(year)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedYears([...selectedYears, year])
+                              } else {
+                                setSelectedYears(selectedYears.filter(y => y !== year))
+                              }
+                            }}
+                            className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                          />
+                          <span className="text-[11px] text-slate-700">{year}</span>
+                        </label>
+                      ))}
+                      {availableYears.length > 0 && (
+                        <button
+                          onClick={() => setSelectedYears([])}
+                          className="text-[11px] text-slate-400 hover:text-slate-700 underline ml-1"
+                        >
+                          Сбросить
+                        </button>
+                      )}
+                    </div>
+                    {availableYears.length === 0 && (
+                      <p className="text-xs text-slate-500">Загрузите операции для выбора периода</p>
+                    )}
+                  </div>
 
-                <div className="rounded-lg bg-white p-4 shadow-sm">
-                  <TaxLoadChart data={chartData} />
+                  {/* Column visibility */}
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-2">
+                      Видимость колонок:
+                    </label>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={columnVisibility.company}
+                          onChange={(e) => setColumnVisibility({ ...columnVisibility, company: e.target.checked })}
+                          className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span className="text-[11px] text-slate-700">Наша компания</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={columnVisibility.counterparty}
+                          onChange={(e) => setColumnVisibility({ ...columnVisibility, counterparty: e.target.checked })}
+                          className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span className="text-[11px] text-slate-700">Контрагент</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={columnVisibility.payment_name}
+                          onChange={(e) => setColumnVisibility({ ...columnVisibility, payment_name: e.target.checked })}
+                          className="h-3 w-3 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                        />
+                        <span className="text-[11px] text-slate-700">Наименование платежа</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
+              )}
+            </div>
 
-                <div className="mt-4">
-                  <OperationsTable operations={operations} />
-                </div>
+            {/* Analytics Section - Full Width */}
+            <div className="w-full">
+              <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
+                <span className="font-medium text-slate-800">Аналитика по НДС</span>
+                <span>Разбивка по месяцам</span>
+              </div>
+
+              <div className="rounded-lg bg-white p-4 shadow-sm">
+                <TaxLoadChart data={chartData} />
+              </div>
+
+              <div className="mt-4">
+                <OperationsTable 
+                  operations={operations} 
+                  selectedYears={selectedYears}
+                  columnVisibility={columnVisibility}
+                />
               </div>
             </div>
           </section>
         )}
       </main>
+
+      {showKNDModal && currentReport && (
+        <KNDModal
+          report={currentReport}
+          isOpen={showKNDModal}
+          onClose={() => setShowKNDModal(false)}
+          onGenerate={(inn, kpp, invoiceData) => {
+            // Handle KND generation here
+            showToast('KND отчет генерируется...', 'info')
+            setShowKNDModal(false)
+          }}
+        />
+      )}
     </div>
   )
 }

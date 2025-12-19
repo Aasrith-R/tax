@@ -19,7 +19,10 @@ const createReportSchema = z.object({
     counterparty: z.string(),
     source: z.string(),
     direction: z.enum(['input', 'output']),
-    errors: z.array(z.string()).optional()
+    errors: z.array(z.string()).optional(),
+    company: z.string().optional(),
+    payment_name: z.string().optional(),
+    additional_info: z.record(z.any()).optional()
   })),
   totals: z.object({
     input_vat: z.number(),
@@ -83,27 +86,83 @@ router.get('/:id', async (req: AuthRequest, res, next) => {
 
 // Create new report
 router.post('/', async (req: AuthRequest, res, next) => {
-  try {
-    const userId = req.userId!
-    const { title, operations, totals } = createReportSchema.parse(req.body)
+  console.log('=== RAW REQUEST DEBUG ===')
+  console.log('Method:', req.method)
+  console.log('URL:', req.url)
+  console.log('Body keys:', Object.keys(req.body || {}))
+  console.log('Body size:', JSON.stringify(req.body || {}).length)
+  console.log('User ID from middleware:', req.userId)
 
+  console.log('✅ User authenticated:', req.userId)
+
+  try {
+    // First, just try to validate the schema
+    console.log('🔍 Validating schema...')
+    const validationResult = createReportSchema.safeParse(req.body)
+
+    if (!validationResult.success) {
+      console.log('❌ Schema validation failed:', validationResult.error.errors)
+      return res.status(400).json({
+        error: 'Validation error',
+        details: validationResult.error.errors
+      })
+    }
+
+    console.log('✅ Schema validation passed')
+    const { title, operations, totals } = validationResult.data
+    console.log(`Title: "${title}"`)
+    console.log(`Operations count: ${operations.length}`)
+
+    // Check for too many operations
+    if (operations.length > 5000) {
+      console.log('❌ Too many operations:', operations.length)
+      return res.status(400).json({ error: 'Слишком много операций (максимум 5000). Разделите данные на меньшие части.' })
+    }
+
+    // Warn about large datasets
+    if (operations.length > 1000) {
+      console.log(`⚠️ Large dataset: ${operations.length} operations`)
+    }
+
+    // Now try database operations
+    console.log('🔍 Testing database connection...')
+    const userCount = await prisma.user.count()
+    console.log(`✅ Database OK, users: ${userCount}`)
+
+    // Try creating the report
+    console.log('📝 Creating report...')
     const report = await prisma.report.create({
       data: {
-        userId,
+        userId: req.userId as string,
         title,
         status: ReportStatus.REQUIRES_REVIEW,
         totals: totals as any,
         operations: {
-          create: operations.map(op => ({
-            date: new Date(op.date),
-            amount: op.amount,
-            vatRate: op.vatRate,
-            vatAmount: op.vatAmount,
-            counterparty: op.counterparty,
-            source: op.source,
-            direction: op.direction,
-            errors: op.errors ? (op.errors as any) : null
-          }))
+          create: operations.map((op, index) => {
+            try {
+              const date = new Date(op.date)
+              if (isNaN(date.getTime())) {
+                throw new Error(`Invalid date: ${op.date}`)
+              }
+
+              return {
+                date,
+                amount: op.amount,
+                vatRate: op.vatRate,
+                vatAmount: op.vatAmount,
+                counterparty: op.counterparty,
+                source: op.source,
+                direction: op.direction,
+                errors: op.errors ? (op.errors as any) : undefined,
+                company: op.company || undefined,
+                paymentName: op.payment_name || undefined,
+                additionalInfo: op.additional_info ? (op.additional_info as any) : undefined
+              }
+            } catch (opError) {
+              console.error(`Error processing operation ${index}:`, opError)
+              throw opError
+            }
+          })
         }
       },
       include: {
@@ -113,12 +172,32 @@ router.post('/', async (req: AuthRequest, res, next) => {
       }
     })
 
+    console.log('✅ Report created:', report.id)
     res.status(201).json({ report })
+
   } catch (error) {
+    console.error('❌ Error:', error)
+
+    // Try to identify the specific error type
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: error.errors[0].message })
+      console.error('Zod validation error:', error.errors)
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.errors
+      })
     }
-    next(error)
+
+    if (error && typeof error === 'object' && 'code' in error) {
+      console.error('Database error code:', (error as any).code)
+    }
+
+    // Return the full error for debugging
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+      type: error?.constructor?.name || typeof error
+    })
   }
 })
 

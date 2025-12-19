@@ -10,6 +10,9 @@ export interface Operation {
   source: string
   direction: VatDirection
   errors?: string[]
+  company?: string // Наша компания (ООО)
+  payment_name?: string // Наименование платежа
+  additional_info?: Record<string, any> // Дополнительная информация для tooltip
 }
 
 export interface VatTotals {

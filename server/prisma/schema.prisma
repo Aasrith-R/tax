@@ -20,6 +20,7 @@ model User {
   updatedAt DateTime @updatedAt
   
   reports   Report[]
+  chats     Chat[]
   
   @@map("users")
 }
@@ -42,19 +43,22 @@ model Report {
 }
 
 model Operation {
-  id          String   @id @default(cuid())
-  reportId    String
-  date        DateTime
-  amount      Float
-  vatRate     Float    @default(0)
-  vatAmount   Float    @default(0)
-  counterparty String
-  source      String
-  direction   String   // 'input' | 'output'
-  errors      Json?    // Array of error strings as JSON
-  
-  report      Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  
+  id             String   @id @default(cuid())
+  reportId       String
+  date           DateTime
+  amount         Float
+  vatRate        Float    @default(0)
+  vatAmount      Float    @default(0)
+  counterparty   String
+  source         String
+  direction      String   // 'input' | 'output'
+  errors         Json?    // Array of error strings as JSON
+  company        String?  // Наша компания
+  paymentName    String?  // Наименование платежа
+  additionalInfo Json?    // Дополнительная информация
+
+  report         Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
   @@map("operations")
   @@index([reportId])
   @@index([date])
@@ -63,5 +67,34 @@ model Operation {
 enum ReportStatus {
   READY
   REQUIRES_REVIEW
+}
+
+model Chat {
+  id        String       @id @default(cuid())
+  userId    String
+  title     String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  ChatMessage[]
+  
+  @@map("chats")
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  chatId    String
+  role      String   // 'user' | 'assistant'
+  content   String
+  createdAt DateTime @default(now())
+  
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  
+  @@map("chat_messages")
+  @@index([chatId])
+  @@index([createdAt])
 }
 

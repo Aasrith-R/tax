@@ -10,12 +10,19 @@ dotenv.config()
 
 const app = express()
 const PORT = Number(process.env.PORT) || 3000
-const HOST = process.env.HOST || '127.0.0.1'
+const HOST = process.env.HOST || '0.0.0.0' // Listen on all interfaces
+
+// Increase payload size limits for large 1C datasets
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ limit: '10mb', extended: true }))
 
 // CORS configuration - allow multiple origins
+const SERVER_IP = process.env.SERVER_IP || '5.35.85.16'
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
+  `http://${SERVER_IP}:5173`,
+  `http://${SERVER_IP}:5174`,
   'https://nds.napoykmf.beget.tech',
   'http://nds.napoykmf.beget.tech',
   process.env.FRONTEND_URL
@@ -29,8 +36,10 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       callback(null, true)
     } else {
-      // For development, allow any localhost
-      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      // For development, allow localhost and server IP
+      if (origin.startsWith('http://localhost:') || 
+          origin.startsWith('http://127.0.0.1:') ||
+          origin.startsWith(`http://${SERVER_IP}:`)) {
         callback(null, true)
       } else {
         callback(new Error('Not allowed by CORS'))

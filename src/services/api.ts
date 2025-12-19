@@ -6,8 +6,9 @@ const getApiBaseUrl = () => {
   if (import.meta.env.PROD) {
     return '/api'
   }
-  // In development, use environment variable or default
-  return import.meta.env.VITE_API_URL || 'http://127.0.0.1:3000/api'
+  // In development, use environment variable or default to server IP
+  const SERVER_IP = import.meta.env.VITE_SERVER_IP || '5.35.85.16'
+  return import.meta.env.VITE_API_URL || `http://${SERVER_IP}:3000/api`
 }
 
 const API_BASE_URL = getApiBaseUrl()
@@ -143,6 +144,9 @@ export const reportsApi = {
           source: op.source,
           direction: op.direction,
           errors: op.errors,
+          company: op.company,
+          payment_name: op.payment_name,
+          additional_info: op.additional_info,
         })),
         totals,
       }),
@@ -175,10 +179,35 @@ export interface ChatRequest {
   }>
   reportId?: string
   operations?: any[]
+  chatId?: string
 }
 
 export interface ChatResponse {
   content: string
+  chatId?: string
+}
+
+export interface Chat {
+  id: string
+  userId: string
+  title: string | null
+  createdAt: string
+  updatedAt: string
+  _count?: {
+    messages: number
+  }
+}
+
+export interface ChatMessage {
+  id: string
+  chatId: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+}
+
+export interface ChatWithMessages extends Chat {
+  messages: ChatMessage[]
 }
 
 async function apiRequestWithFiles<T>(
@@ -192,6 +221,10 @@ async function apiRequestWithFiles<T>(
   
   if (data.reportId) {
     formData.append('reportId', data.reportId)
+  }
+  
+  if (data.chatId) {
+    formData.append('chatId', data.chatId)
   }
   
   if (data.operations) {
@@ -229,6 +262,20 @@ async function apiRequestWithFiles<T>(
 export const chatApi = {
   async sendMessage(request: ChatRequest): Promise<ChatResponse> {
     return apiRequestWithFiles<ChatResponse>('/chat', request)
+  },
+
+  async getAll(): Promise<{ chats: Chat[] }> {
+    return apiRequest<{ chats: Chat[] }>('/chat')
+  },
+
+  async getById(id: string): Promise<{ chat: ChatWithMessages }> {
+    return apiRequest<{ chat: ChatWithMessages }>(`/chat/${id}`)
+  },
+
+  async delete(id: string): Promise<{ message: string }> {
+    return apiRequest<{ message: string }>(`/chat/${id}`, {
+      method: 'DELETE',
+    })
   },
 }
 

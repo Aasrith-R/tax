@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { chatApi } from '../../services/api'
+import { chatApi, type ChatMessage as ApiChatMessage } from '../../services/api'
 
 export interface ChatMessage {
   id: string
@@ -18,11 +18,14 @@ export interface Attachment {
 }
 
 interface AIChatProps {
+  chatId?: string
   reportId?: string
   operations?: any[]
+  onChatSaved?: () => void
 }
 
-export function AIChat({ reportId, operations }: AIChatProps) {
+export function AIChat({ chatId, reportId, operations, onChatSaved }: AIChatProps) {
+  const [currentChatId, setCurrentChatId] = useState<string | undefined>(chatId)
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
@@ -36,6 +39,40 @@ export function AIChat({ reportId, operations }: AIChatProps) {
   const [isLoading, setIsLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Load chat when chatId changes
+  useEffect(() => {
+    if (chatId) {
+      loadChat(chatId)
+      setCurrentChatId(chatId)
+    } else {
+      // Reset to welcome message
+      setMessages([{
+        id: '1',
+        role: 'assistant',
+        content: 'Привет! Я ваш помощник по налоговому учету. Можете задать вопросы о ваших данных, например:\n\n• "Почему НДС к уплате вырос?"\n• "Покажи топ контрагентов"\n• "Проанализируй операции за последний месяц"\n\nТакже можете прикрепить файлы (PDF, Word, Excel, сканы) и спросить о них, например:\n\n• "Я прикрепил запрос пояснений из налоговой — составь ответ"\n• "Что нужно исправить в этом документе?"',
+        timestamp: new Date(),
+      }])
+      setCurrentChatId(undefined)
+    }
+  }, [chatId])
+
+  const loadChat = async (id: string) => {
+    try {
+      const response = await chatApi.getById(id)
+      const apiMessages = response.chat.messages
+      const loadedMessages: ChatMessage[] = apiMessages.map((msg: ApiChatMessage) => ({
+        id: msg.id,
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+        timestamp: new Date(msg.createdAt),
+      }))
+      setMessages(loadedMessages)
+      setCurrentChatId(id)
+    } catch (error) {
+      console.error('Failed to load chat:', error)
+    }
+  }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -87,7 +124,16 @@ export function AIChat({ reportId, operations }: AIChatProps) {
         attachments: currentAttachments,
         reportId,
         operations,
+        chatId: currentChatId,
       })
+
+      // Update chat ID if this is a new chat
+      if (response.chatId && !currentChatId) {
+        setCurrentChatId(response.chatId)
+        if (onChatSaved) {
+          onChatSaved()
+        }
+      }
 
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -97,6 +143,11 @@ export function AIChat({ reportId, operations }: AIChatProps) {
       }
 
       setMessages((prev) => [...prev, assistantMessage])
+      
+      // Notify parent that chat was saved/updated
+      if (onChatSaved && response.chatId) {
+        onChatSaved()
+      }
     } catch (error) {
       const errorMessage: ChatMessage = {
         id: `error-${Date.now()}`,
@@ -262,7 +313,7 @@ export function AIChat({ reportId, operations }: AIChatProps) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.txt"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.jpg,.jpeg,.png,.txt"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -301,7 +352,7 @@ export function AIChat({ reportId, operations }: AIChatProps) {
           </button>
         </div>
         <p className="mt-2 text-xs text-slate-500">
-          Поддерживаются файлы: PDF, Word, Excel, изображения (JPG, PNG)
+          Поддерживаются файлы: PDF, Word, Excel, CSV, изображения (JPG, PNG)
         </p>
       </div>
     </div>

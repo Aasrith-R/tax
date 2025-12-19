@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react'
 import { AIChat } from '../components/chat/AIChat'
-import { reportsApi, type Report } from '../services/api'
+import { reportsApi, chatApi, type Report, type Chat } from '../services/api'
 
 export function ChatPage() {
   const [reports, setReports] = useState<Report[]>([])
+  const [chats, setChats] = useState<Chat[]>([])
   const [selectedReport, setSelectedReport] = useState<Report | null>(null)
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [operations, setOperations] = useState<any[]>([])
 
   useEffect(() => {
     loadReports()
+    loadChats()
   }, [])
 
   const loadReports = async () => {
@@ -18,6 +21,47 @@ export function ChatPage() {
     } catch (error) {
       console.error('Failed to load reports:', error)
     }
+  }
+
+  const loadChats = async () => {
+    try {
+      const response = await chatApi.getAll()
+      setChats(response.chats)
+    } catch (error) {
+      console.error('Failed to load chats:', error)
+    }
+  }
+
+  const handleChatSelect = async (chatId: string) => {
+    setSelectedChatId(chatId)
+    setSelectedReport(null)
+    setOperations([])
+  }
+
+  const handleDeleteChat = async (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('Удалить этот чат?')) return
+    
+    try {
+      await chatApi.delete(chatId)
+      setChats(chats.filter(c => c.id !== chatId))
+      if (selectedChatId === chatId) {
+        setSelectedChatId(null)
+      }
+    } catch (error) {
+      console.error('Failed to delete chat:', error)
+      alert('Не удалось удалить чат')
+    }
+  }
+
+  const handleNewChat = () => {
+    setSelectedChatId(null)
+    setSelectedReport(null)
+    setOperations([])
+  }
+
+  const handleChatSaved = () => {
+    loadChats()
   }
 
   const handleReportSelect = async (reportId: string) => {
@@ -32,8 +76,49 @@ export function ChatPage() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-4rem)] max-w-7xl gap-4 p-4">
-      {/* Sidebar with reports */}
-      <div className="w-64 flex-shrink-0 rounded-xl border border-slate-200 bg-white p-4">
+      {/* Sidebar with chats and reports */}
+      <div className="w-64 flex-shrink-0 space-y-4">
+        {/* Chats section */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-900">Чаты</h2>
+            <button
+              onClick={handleNewChat}
+              className="text-xs text-sky-600 hover:text-sky-700"
+            >
+              + Новый
+            </button>
+          </div>
+          <div className="space-y-1 max-h-64 overflow-y-auto">
+            {chats.map((chat) => (
+              <div
+                key={chat.id}
+                className={`group relative rounded-lg px-3 py-2 text-left text-sm transition-colors cursor-pointer ${
+                  selectedChatId === chat.id
+                    ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                    : 'text-slate-700 hover:bg-slate-50'
+                }`}
+                onClick={() => handleChatSelect(chat.id)}
+              >
+                <div className="font-medium pr-6">{chat.title || 'Новый чат'}</div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  {chat._count?.messages || 0} сообщений
+                </div>
+                <button
+                  onClick={(e) => handleDeleteChat(chat.id, e)}
+                  className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Reports section */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4">
         <h2 className="mb-4 text-sm font-semibold text-slate-900">Контекст данных</h2>
         <div className="space-y-2">
           <button
@@ -76,6 +161,7 @@ export function ChatPage() {
             </div>
           </div>
         )}
+        </div>
       </div>
 
       {/* Chat area */}
@@ -89,7 +175,12 @@ export function ChatPage() {
           </p>
         </div>
         <div className="h-[calc(100%-80px)]">
-          <AIChat reportId={selectedReport?.id} operations={operations} />
+          <AIChat 
+            chatId={selectedChatId || undefined}
+            reportId={selectedReport?.id} 
+            operations={operations}
+            onChatSaved={handleChatSaved}
+          />
         </div>
       </div>
     </div>

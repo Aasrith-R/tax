@@ -393,7 +393,7 @@ export function KNDModal({ report, isOpen, onClose, onGenerate }: KNDModalProps)
 
           <div className="mb-4 p-3 bg-slate-50 rounded-lg">
             <p className="text-sm text-slate-600 mb-1">Отчет:</p>
-            <p className="font-medium text-slate-900">{report.title}</p>
+            <p className="font-medium text-slate-900">{report.title || 'Без названия'}</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
